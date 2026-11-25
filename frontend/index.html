@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Client Portal · Trading & ShieldOrder Smart Limit Integration</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <link rel="stylesheet" href="/styles.css?v=20261125-6" />
+</head>
+<body>
+  <!-- BARRA SUPERIOR ESTILO INTERACTIVE BROKERS -->
+  <header class="ib-topbar">
+    <div class="ib-brand">
+      <div class="ib-logo-mark">
+        <span class="ib-triangle"></span>
+      </div>
+      <div class="ib-brand-text">
+        <span class="ib-name">Interactive<strong>Brokers</strong></span>
+        <span class="ib-plugin-tag">Portal Demo · Powered by ShieldOrder B2B</span>
+      </div>
+    </div>
+
+    <nav class="ib-nav">
+      <a href="#" class="ib-nav-item" id="navPortfolio">Portfolio &amp; Perfil</a>
+      <a href="#" class="ib-nav-item active" id="navLiveMode">Trade (En Vivo)</a>
+      <a href="#" class="ib-nav-item" id="navRealCases">Casos Reales de Crashes</a>
+      <a href="/docs" target="_blank" class="ib-nav-item">API B2B (Swagger)</a>
+    </nav>
+
+    <div class="ib-top-right">
+      <div class="ib-search-wrap">
+        <span class="search-icon">🔍</span>
+        <input id="searchInput" type="text" placeholder="Search ticker (ASML, NVDA, TSLA...)" autocomplete="off" />
+        <kbd>Ctrl+K</kbd>
+        <div id="searchDropdown" class="search-dropdown hidden"></div>
+      </div>
+      <button id="btnExportPdf" class="ib-icon-btn" title="Descargar informe ejecutivo de backtest para brókers (PDF)">
+        <span>📄 Informe PDF</span>
+      </button>
+      <button id="btnOpenGemini" class="ib-icon-btn" title="Configurar Google Gemini AI">
+        <span id="geminiDot" class="status-dot dot-amber"></span>
+        <span>Gemini AI</span>
+      </button>
+      <button id="btnTopTrade" class="ib-trade-cta">Trade</button>
+    </div>
+  </header>
+
+  <!-- MODAL OPCIONAL DE GEMINI API -->
+  <div id="geminiModal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>✨ Conectar Google Gemini API (Opcional)</h3>
+        <button id="btnCloseGemini" class="close-x">✕</button>
+      </div>
+      <p class="modal-copy">
+        El motor de ejecución de <strong>ShieldOrder</strong> decide en <code>&lt;1 ms</code> con matemáticas auditables (sin LLM en la ruta crítica).
+        Conecta tu clave gratuita de Google AI Studio para potenciar el <strong>Copiloto de Lenguaje Natural</strong> dentro del Order Ticket.
+      </p>
+      <label class="ib-label">GEMINI_API_KEY</label>
+      <input id="inputGeminiKey" type="password" class="ib-input" placeholder="AIzaSy..." />
+      <div class="modal-actions">
+        <button id="btnSaveGemini" class="ib-btn-blue">Guardar Clave</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- FRANJA DE COTIZACIÓN DEL ACTIVO (ESTILO IBKR QUOTE HEADER) -->
+  <section class="quote-header">
+    <div class="quote-left">
+      <div class="quote-title-row">
+        <h1 id="qSymbol">ASML</h1>
+        <span id="qName" class="q-company">Cargando datos reales...</span>
+        <span id="qExchange" class="q-exchange">NASDAQ</span>
+        <span id="qModePill" class="q-live-pill">● TIEMPO REAL</span>
+      </div>
+      <div class="quote-price-row">
+        <span id="qPrice" class="q-main-price">—</span>
+        <span id="qCurrency" class="q-currency">USD</span>
+        <span id="qChange" class="q-change">—</span>
+        <div class="q-bid-ask">
+          <div><span class="ba-lbl">Ask</span> <strong id="qAsk" class="txt-red">—</strong> <span class="ba-sz">× 24</span></div>
+          <div><span class="ba-lbl">Bid</span> <strong id="qBid" class="txt-blue">—</strong> <span class="ba-sz">× 17</span></div>
+        </div>
+        <div class="q-tox-mini" id="qLiveToxBadge">
+          <span>Toxicidad actual:</span>
+          <strong id="qLiveToxVal">—</strong>
+        </div>
+      </div>
+    </div>
+
+    <div class="quote-subtabs">
+      <button class="subtab-btn active" data-view="viewQuote">
+        <span class="subtab-ic">📈</span>
+        <span>Quote &amp; Backtest</span>
+      </button>
+      <button class="subtab-btn" data-view="viewPortfolio">
+        <span class="subtab-ic">💼</span>
+        <span>Cartera &amp; Perfil <em id="fitMiniBadge" class="count-pill">—</em></span>
+      </button>
+      <button class="subtab-btn" data-view="viewOrders">
+        <span class="subtab-ic">📋</span>
+        <span>Órdenes Activas <em id="ordersCountBadge" class="count-pill">0</em></span>
+      </button>
+      <button class="subtab-btn" data-view="viewOmsJson">
+        <span class="subtab-ic">🔌</span>
+        <span>OMS JSON (B2B)</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- SELECTOR RÁPIDO DE ACCIONES EN VIVO Y CASOS HISTÓRICOS REALES -->
+  <section class="cases-ribbon">
+    <div class="ribbon-group">
+      <span class="ribbon-label">En Vivo:</span>
+      <button class="ribbon-pill active" data-live="ASML">ASML</button>
+      <button class="ribbon-pill" data-live="NVDA">NVDA</button>
+      <button class="ribbon-pill" data-live="TSLA">TSLA</button>
+      <button class="ribbon-pill" data-live="AAPL">AAPL</button>
+      <button class="ribbon-pill" data-live="MSFT">MSFT</button>
+      <button class="ribbon-pill" data-live="BTC-USD">BTC-USD</button>
+    </div>
+    <div class="ribbon-divider"></div>
+    <div class="ribbon-group" id="realCasesContainer">
+      <span class="ribbon-label">⚡ Casos Históricos Reales:</span>
+      <!-- Se llena desde /api/v1/market/real-cases -->
+    </div>
+  </section>
+
+  <!-- CONTENEDOR PRINCIPAL: GRÁFICO IZQUIERDA (70%) + ORDER TICKET DERECHA (30%) -->
+  <main class="ib-workspace">
+    <!-- COLUMNA IZQUIERDA: GRÁFICO + AUDITORÍA -->
+    <div class="left-stage">
+      <!-- Banner descriptivo si es un caso histórico real -->
+      <div id="caseBanner" class="case-banner hidden">
+        <div>
+          <strong id="caseBannerTitle">—</strong>
+          <p id="caseBannerDesc">—</p>
+        </div>
+        <button id="btnReturnLive" class="ib-btn-outline-sm">Volver a Tiempo Real</button>
+      </div>
+
+      <!-- TARJETA DEL GRÁFICO ESTILO TRADINGVIEW / IBKR BLANCO -->
+      <div class="chart-card">
+        <div class="chart-toolbar">
+          <div class="tf-group" id="tfGroup">
+            <button class="tf-btn" data-tf="1m">1m</button>
+            <button class="tf-btn active" data-tf="5m">5m</button>
+            <button class="tf-btn" data-tf="15m">15m</button>
+            <button class="tf-btn" data-tf="1h">1H</button>
+            <button class="tf-btn" data-tf="1d">1D</button>
+          </div>
+          <div class="ohlc-bar" id="ohlcReadout">
+            <span id="chartSourceLabel">Yahoo Finance Real-Time</span>
+          </div>
+          <div class="chart-hint">💡 Haz clic en el gráfico para ajustar el Limit Price</div>
+        </div>
+        <div id="ibChart" class="ib-chart-canvas">
+          <div id="chartLoadingOverlay" class="chart-loading hidden">Cargando gráfico real...</div>
+        </div>
+      </div>
+
+      <!-- SUB-VISTA 1: COMPARATIVA BACKTEST + 5 MÉTRICAS + NOTIFICACIÓN -->
+      <div id="viewQuote" class="subview-panel">
+        <div id="untouchedNotice" class="notice-amber hidden"></div>
+
+        <div class="comparison-strip">
+          <div class="comp-card">
+            <div class="comp-top">
+              <span class="comp-title">Limit Order Estándar (IBKR Actual)</span>
+              <span id="stdPill" class="pill pill-grey">—</span>
+            </div>
+            <div id="stdMainVal" class="comp-number">—</div>
+            <div id="stdSubVal" class="comp-sub">Pulsa "Preview / Backtest" en el Order Ticket para evaluar</div>
+          </div>
+
+          <div class="comp-card comp-card-shield">
+            <div class="comp-top">
+              <span class="comp-title">🛡️ Smart Limit (ShieldOrder)</span>
+              <span id="smartPill" class="pill pill-green">—</span>
+            </div>
+            <div id="smartMainVal" class="comp-number">—</div>
+            <div id="smartSubVal" class="comp-sub">Protección activa ante caídas anómalas</div>
+          </div>
+
+          <div class="comp-card">
+            <div class="comp-top">
+              <span class="comp-title">Toxicidad en el Toque</span>
+              <span class="latency-chip">0.42 ms</span>
+            </div>
+            <div class="tox-row">
+              <span id="toxVal" class="comp-number">—</span>
+              <div class="tox-track"><div id="toxBar" class="tox-fill"></div></div>
+            </div>
+            <div id="toxSub" class="comp-sub">Umbral de bloqueo: 60/100</div>
+          </div>
+        </div>
+
+        <div class="details-two-col">
+          <div class="white-card">
+            <h3>Radiografía Interactiva de Métricas (Modifícalas a tu gusto)</h3>
+            <p class="muted-sm">Activa, desactiva o ajusta el límite de cada métrica directamente en su barra para decidir cuándo bloquear la Limit Order:</p>
+            <div id="metricsList" class="metrics-list"></div>
+            <ul id="flagsList" class="flags-list"></ul>
+          </div>
+
+          <div class="white-card">
+            <h3>Notificación Transparente al Cliente del Bróker</h3>
+            <p class="muted-sm">Mensaje auditable que recibe el usuario en la app móvil cuando ShieldOrder actúa:</p>
+            <div class="notif-preview">
+              <div class="notif-meta">
+                <span>Interactive Brokers · ShieldOrder</span>
+                <span>Ahora</span>
+              </div>
+              <h4 id="notifTitle">—</h4>
+              <p id="notifBody">—</p>
+              <div id="notifConfirmRow" class="notif-actions hidden">
+                <button class="btn-soft-red">Descartar</button>
+                <button class="btn-soft-blue">Ejecutar Igualmente</button>
+              </div>
+            </div>
+            <div id="notifEngine" class="engine-meta"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUB-VISTA 2: CARTERA & PERFIL DEL INVERSOR (IMPACTO PRE-TRADE COMPLETO) -->
+      <div id="viewPortfolio" class="subview-panel hidden">
+        <!-- Encaje y Smart Sizing -->
+        <div class="pf-verdict-card" id="pfVerdictCard">
+          <div class="pf-verdict-left">
+            <div class="pf-score-ring" id="pfScoreRing">—</div>
+            <div>
+              <div class="pf-verdict-head">
+                <strong id="pfFitLabel">Calculando encaje con tu perfil...</strong>
+                <span id="pfAssetMetaBadge" class="pill pill-grey">—</span>
+              </div>
+              <p id="pfSizingAdvice" class="pf-sizing-text">—</p>
+            </div>
+          </div>
+          <button type="button" id="btnApplyOptimalFull" class="ib-btn-blue hidden">Aplicar tamaño óptimo</button>
+        </div>
+
+        <div class="pf-two-col">
+          <!-- Perfil del Inversor Editable -->
+          <div class="white-card">
+            <h3>👤 Tu Perfil de Inversor</h3>
+            <p class="muted-sm">Personaliza tu perfil para que ShieldOrder evalúe si esta orden encaja con tus objetivos:</p>
+            <div class="pf-form-grid">
+              <div>
+                <label class="ib-label">TOLERANCIA AL RIESGO</label>
+                <select id="pfRisk" class="ib-select">
+                  <option value="CONSERVATIVE">Conservador (Beta &lt; 0.90)</option>
+                  <option value="MODERATE" selected>Moderado (Beta &lt; 1.18)</option>
+                  <option value="AGGRESSIVE">Agresivo (Beta &lt; 1.55)</option>
+                </select>
+              </div>
+              <div>
+                <label class="ib-label">HORIZONTE TEMPORAL</label>
+                <select id="pfHorizon" class="ib-select">
+                  <option value="SHORT">Corto Plazo (&lt; 1 año)</option>
+                  <option value="MEDIUM">Medio Plazo (1 – 5 años)</option>
+                  <option value="LONG" selected>Largo Plazo (&gt; 5 años)</option>
+                </select>
+              </div>
+              <div>
+                <label class="ib-label">ESTILO DE INVERSIÓN</label>
+                <select id="pfStyle" class="ib-select">
+                  <option value="BALANCED" selected>Equilibrado</option>
+                  <option value="GROWTH">Crecimiento (Growth)</option>
+                  <option value="VALUE">Valor (Value)</option>
+                  <option value="DIVIDEND">Dividendos / Rentas</option>
+                </select>
+              </div>
+              <div>
+                <label class="ib-label">RENTABILIDAD OBJETIVO ANUAL (<strong id="lblPfTargetRet">11.0%</strong>)</label>
+                <input id="pfTargetRet" type="range" min="5" max="24" step="0.5" value="11.0" style="width:100%;accent-color:#0052cc;margin-top:6px;" />
+              </div>
+              <div>
+                <label class="ib-label">MÁX. PESO POR ACCIÓN (<strong id="lblPfMaxPos">15%</strong>)</label>
+                <input id="pfMaxPos" type="range" min="5" max="35" step="1" value="15" style="width:100%;accent-color:#0052cc;" />
+              </div>
+              <div>
+                <label class="ib-label">MÁX. PESO POR SECTOR (<strong id="lblPfMaxSec">35%</strong>)</label>
+                <input id="pfMaxSec" type="range" min="15" max="70" step="5" value="35" style="width:100%;accent-color:#0052cc;" />
+              </div>
+            </div>
+            <label class="ib-label" style="margin-top:10px;">SECTORES PREFERIDOS</label>
+            <div id="pfSectorsChips" class="sector-chips-wrap"></div>
+
+            <div class="pf-alerts-wrap">
+              <ul id="pfWarningsList" class="flags-list"></ul>
+              <ul id="pfPositivesList" class="flags-list"></ul>
+            </div>
+          </div>
+
+          <!-- Impacto Cuantitativo Antes vs Después + Sectores -->
+          <div class="white-card">
+            <h3>📊 Impacto Cuantitativo Pre-Trade (Antes → Después)</h3>
+            <p class="muted-sm">Efecto exacto si se ejecuta tu orden en <strong id="pfOrderSummaryLbl">—</strong>:</p>
+            <table class="orders-table pf-compare-table">
+              <thead>
+                <tr>
+                  <th>Factor de Cartera</th>
+                  <th>Actual</th>
+                  <th>Tras Orden</th>
+                  <th>Cambio</th>
+                </tr>
+              </thead>
+              <tbody id="pfImpactTableBody"></tbody>
+            </table>
+
+            <h4 style="margin-top:14px;margin-bottom:6px;font-size:12.5px;">Exposición Sectorial (Antes vs. Después)</h4>
+            <div id="pfSectorBars" class="pf-sector-bars"></div>
+          </div>
+        </div>
+
+        <!-- Tabla Editable de las 8+ Posiciones de Cartera -->
+        <div class="white-card" style="margin-top:12px;">
+          <div class="orders-head">
+            <div>
+              <h3>💼 Posiciones de tu Cartera en Interactive Brokers (Editables)</h3>
+              <p class="muted-sm">Modifica tus acciones, tu liquidez o añade tickers para probar el impacto real sobre tu propia cartera.</p>
+            </div>
+            <div class="cash-editor-box">
+              <label class="ib-label" style="margin:0;">CASH DISPONIBLE ($)</label>
+              <input id="pfCashInput" type="number" step="500" value="18500" class="m-num-input" style="width:100px;" />
+            </div>
+          </div>
+          <div id="pfHoldingsTableWrap" class="orders-table-wrap"></div>
+          <div class="add-holding-row">
+            <input id="addHoldSym" type="text" class="ib-input" placeholder="Añadir ticker (ej. GOOGL, KO, BTC-USD)" style="max-width:220px;" />
+            <input id="addHoldShares" type="number" min="1" step="1" value="20" class="ib-input" placeholder="Acciones" style="max-width:100px;" />
+            <input id="addHoldPrice" type="number" min="1" step="1" value="175" class="ib-input" placeholder="Precio $" style="max-width:110px;" />
+            <button type="button" id="btnAddHolding" class="ib-btn-outline-sm">+ Añadir Posición</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUB-VISTA 3: ÓRDENES ACTIVAS EN VIVO (PAPER LIVE MONITOR) -->
+      <div id="viewOrders" class="subview-panel hidden">
+        <div class="white-card">
+          <div class="orders-head">
+            <div>
+              <h3>Órdenes Activas en Vigilancia (Tiempo Real)</h3>
+              <p class="muted-sm">Órdenes sintéticas monitorizadas cada 15 segundos contra cotizaciones reales de Yahoo Finance.</p>
+            </div>
+            <button id="btnRefreshLive" class="ib-btn-outline-sm">↻ Actualizar Cotización</button>
+          </div>
+          <div id="ordersTableWrap" class="orders-table-wrap">
+            <p class="empty-state">Aún no has enviado ninguna orden en vivo. Configura el Order Ticket a la derecha y pulsa <strong>Buy Order</strong>.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUB-VISTA 3: PAYLOAD B2B PARA EL OMS DEL BRÓKER -->
+      <div id="viewOmsJson" class="subview-panel hidden">
+        <div class="white-card">
+          <h3>Integración B2B · Payload JSON hacia el OMS de Interactive Brokers</h3>
+          <p class="muted-sm">Respuesta en &lt;1ms devuelta por <code>POST /api/v1/b2b/evaluate-order</code> para auditar y ejecutar o bloquear la orden:</p>
+          <pre id="omsJsonPre" class="oms-pre"></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- COLUMNA DERECHA: ORDER TICKET ESTILO INTERACTIVE BROKERS + SHIELDORDER -->
+    <aside class="right-ticket">
+      <!-- Botones rápidos Buy / Sell como en la vista Quote de IBKR -->
+      <div class="ib-quick-buy-sell">
+        <button id="quickBuyBtn" class="btn-ib-buy active">Buy</button>
+        <button id="quickSellBtn" class="btn-ib-sell">Sell</button>
+      </div>
+
+      <!-- TARJETA ORDER TICKET -->
+      <div class="order-ticket-card">
+        <div class="ticket-blue-header">
+          <span>ORDER TICKET</span>
+          <span class="ticket-sym-pill" id="ticketSymBadge">ASML</span>
+        </div>
+
+        <div class="ticket-body">
+          <!-- Pestañas Buy / Sell estilo IBKR -->
+          <div class="ticket-side-tabs">
+            <button id="tabBuy" class="side-tab active">Buy</button>
+            <button id="tabSell" class="side-tab">Sell</button>
+          </div>
+
+          <!-- QUANTITY & SHARES -->
+          <div class="ticket-grid-2">
+            <div>
+              <label class="ib-label">QUANTITY</label>
+              <div class="stepper-box">
+                <input id="inputQty" type="number" min="1" step="1" value="10" />
+                <button type="button" id="qtyMinus">−</button>
+                <button type="button" id="qtyPlus">+</button>
+              </div>
+            </div>
+            <div>
+              <label class="ib-label">UNIT</label>
+              <select class="ib-select">
+                <option>Shares</option>
+                <option>USD Amount</option>
+              </select>
+            </div>
+          </div>
+          <div id="estOrderTotal" class="est-total">~ 0.00 USD</div>
+
+          <!-- ORDER TYPE & LIMIT PRICE -->
+          <div class="ticket-grid-2">
+            <div>
+              <label class="ib-label">ORDER TYPE</label>
+              <select id="selectOrderType" class="ib-select">
+                <option value="SMART_LIMIT" selected>Smart Limit (ShieldOrder)</option>
+                <option value="LIMIT">Limit (Estándar)</option>
+              </select>
+            </div>
+            <div>
+              <label class="ib-label">LIMIT PRICE</label>
+              <div class="stepper-box">
+                <input id="inputLimitPrice" type="number" step="0.5" value="0" />
+                <button type="button" id="priceMinus">−</button>
+                <button type="button" id="pricePlus">+</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- MÓDULO INTEGRADO SHIELDORDER (DONDE IBKR PONE PRICE MANAGEMENT ALGO) -->
+          <div class="shield-plugin-box" id="shieldPluginBox">
+            <label class="shield-checkbox-row">
+              <input type="checkbox" id="chkShieldEnabled" checked />
+              <span class="shield-chk-title">🛡️ ShieldOrder Context Protection</span>
+              <span class="shield-b2b-pill">SMART ALGO</span>
+            </label>
+
+            <div id="shieldControlsBody" class="shield-controls">
+              <div id="shieldActionLabel" class="shield-sub-label">Si el precio llega en desplome anómalo:</div>
+              <div class="action-seg" id="modeSeg">
+                <button type="button" class="seg-btn active" data-mode="INVALIDATE">Invalidar</button>
+                <button type="button" class="seg-btn" data-mode="WAIT_FOR_BOUNCE">Esperar Rebote</button>
+                <button type="button" class="seg-btn" data-mode="REQUIRE_CONFIRMATION">Push Móvil</button>
+              </div>
+
+              <div class="shield-sub-label">Perfil base o ajuste manual de las 5 métricas:</div>
+              <div class="preset-seg" id="presetSeg">
+                <button type="button" class="pseg-btn" data-preset="CONSERVATIVE">Conservador</button>
+                <button type="button" class="pseg-btn active" data-preset="MODERATE">Moderado</button>
+                <button type="button" class="pseg-btn" data-preset="AGGRESSIVE">Agresivo</button>
+                <button type="button" class="pseg-btn" data-preset="CUSTOM">Manual ⚙️</button>
+              </div>
+
+              <!-- Sliders manuales de las 5 métricas + Umbral (visibles para configurar al gusto) -->
+              <div id="customSliders" class="custom-sliders">
+                <div class="sl-item">
+                  <div class="sl-head"><span>1. Velocidad máx. (<em id="lblWin">60</em>m)</span><strong id="lblDrop">4.0%</strong></div>
+                  <input id="slDrop" type="range" min="1.0" max="15.0" step="0.5" value="4.0" />
+                </div>
+                <div class="sl-item">
+                  <div class="sl-head"><span>↳ Ventana temporal</span><strong id="lblWinVal">60 min</strong></div>
+                  <input id="slWin" type="range" min="15" max="180" step="15" value="60" />
+                </div>
+                <div class="sl-item">
+                  <div class="sl-head"><span>2. Volumen Relativo máx. (RVOL)</span><strong id="lblRvol">2.5x</strong></div>
+                  <input id="slRvol" type="range" min="0.5" max="6.0" step="0.1" value="2.5" />
+                </div>
+                <div class="sl-item">
+                  <div class="sl-head"><span>3. Volatilidad máx. (ATR)</span><strong id="lblAtr">2.5x</strong></div>
+                  <input id="slAtr" type="range" min="0.4" max="6.0" step="0.1" value="2.5" />
+                </div>
+                <div class="sl-item">
+                  <div class="sl-head"><span>4. RSI límite (14)</span><strong id="lblRsi">28</strong></div>
+                  <input id="slRsi" type="range" min="10" max="75" step="1" value="28" />
+                </div>
+                <div class="sl-item">
+                  <div class="sl-head"><span>5. Divergencia máx. vs Índice</span><strong id="lblDiv">3.5%</strong></div>
+                  <input id="slDiv" type="range" min="0.2" max="12.0" step="0.2" value="3.5" />
+                </div>
+                <div class="sl-item">
+                  <div class="sl-head"><span>🎯 Umbral Toxicidad de bloqueo</span><strong id="lblTox">60/100</strong></div>
+                  <input id="slTox" type="range" min="25" max="90" step="5" value="60" />
+                </div>
+              </div>
+
+              <!-- Copiloto Gemini colapsable -->
+              <details class="gemini-accordion">
+                <summary>✨ Configurar con lenguaje natural (Gemini AI)</summary>
+                <div class="gemini-inner">
+                  <textarea id="txtCopilot" rows="2" class="ib-textarea" placeholder="Ej: Compra si baja suave, pero invalida si cae >5% con mucho volumen"></textarea>
+                  <button type="button" id="btnRunCopilot" class="ib-btn-purple-sm">Aplicar regla con IA</button>
+                  <div id="copilotMsg" class="copilot-msg hidden"></div>
+                </div>
+              </details>
+            </div>
+          </div>
+
+          <!-- TIME-IN-FORCE & OUTSIDE RTH (ESTILO IBKR EXACTO) -->
+          <div class="ticket-grid-2">
+            <div>
+              <label class="ib-label">TIME-IN-FORCE</label>
+              <select id="selectTif" class="ib-select">
+                <option value="Day">Day</option>
+                <option value="GTC">Good-Til-Canceled (GTC)</option>
+              </select>
+            </div>
+            <div>
+              <label class="ib-label">OUTSIDE RTH</label>
+              <select id="selectRth" class="ib-select">
+                <option value="No">No</option>
+                <option value="Yes">Yes</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- PROBABILIDAD ESPERADA DE EJECUCIÓN (HISTÓRICO REAL + MÉTRICAS) -->
+          <div class="fill-prob-box" id="ticketFillProbBox">
+            <div class="fp-head">
+              <span>🎯 Prob. Esperada de Ejecución</span>
+              <span id="fpMainPct" class="pill pill-green">—%</span>
+            </div>
+            <div class="fp-bar-track">
+              <div id="fpBarFill" class="fp-bar-fill"></div>
+            </div>
+            <div class="fp-breakdown">
+              <div><span>Toque precio (<em id="fpGapVolLbl">—</em>)</span><strong id="fpTouchPct">—%</strong></div>
+              <div><span>Aprobar tus 5 métricas</span><strong id="fpPassPct">—%</strong></div>
+            </div>
+            <div class="fp-horizons">
+              <span>Hoy (Day): <strong id="fpDayPct">—%</strong></span>
+              <span>5 Días: <strong id="fpWeekPct">—%</strong></span>
+              <span>GTC (30d): <strong id="fpMonthPct">—%</strong></span>
+            </div>
+            <p id="fpBottleneck" class="fp-insight">—</p>
+          </div>
+
+          <!-- IMPACTO PRE-TRADE EN CARTERA (COMPACTO EN EL ORDER TICKET) -->
+          <div class="ticket-impact-box" id="ticketImpactBox">
+            <div class="ti-head">
+              <span>💼 Impacto en tu Cartera</span>
+              <span id="tiFitPill" class="pill pill-green">—/100</span>
+            </div>
+            <div class="ti-grid">
+              <div class="ti-cell">
+                <span>Peso <em id="tiSymLbl">ASML</em></span>
+                <strong id="tiWeightVal">—</strong>
+              </div>
+              <div class="ti-cell">
+                <span>Rentab. Esp.</span>
+                <strong id="tiRetVal">—</strong>
+              </div>
+              <div class="ti-cell">
+                <span>Beta Mercado</span>
+                <strong id="tiBetaVal">—</strong>
+              </div>
+              <div class="ti-cell">
+                <span>Volatilidad</span>
+                <strong id="tiVolVal">—</strong>
+              </div>
+            </div>
+            <div id="tiSizingRow" class="ti-sizing-row hidden">
+              <span id="tiSizingMsg">—</span>
+              <button type="button" id="btnApplyOptimalTicket" class="ti-opt-btn">Ajustar</button>
+            </div>
+            <button type="button" id="btnOpenPortfolioTab" class="ti-more-link">Ver análisis completo de cartera y perfil →</button>
+          </div>
+
+          <div class="ticket-footnote">
+            <span>MARKET DATA POWERED BY YAHOO FINANCE REAL-TIME</span>
+          </div>
+
+          <!-- BOTONES FINALES ESTILO IBKR -->
+          <div class="ticket-cta-row">
+            <button type="button" id="btnPlaceLiveOrder" class="ib-btn-blue-lg">Buy Order</button>
+            <button type="button" id="btnPreviewBacktest" class="ib-btn-preview">Preview / Backtest</button>
+          </div>
+          <div id="orderConfirmToast" class="order-toast hidden"></div>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/app.js?v=20261125-6"></script>
+</body>
+</html>
