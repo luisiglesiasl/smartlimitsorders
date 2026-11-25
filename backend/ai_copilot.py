@@ -1,8 +1,9 @@
 """
-Módulo de Inteligencia Artificial con Google Gemini (google-genai SDK).
+Módulo de Inteligencia Artificial con Google Gemini (google-genai SDK) v4.0.
 Cumple dos funciones B2B seguras (fuera de la ruta crítica de milisegundos):
-1. Copiloto de Órdenes: Traduce instrucciones en lenguaje natural a reglas matemáticas auditables.
-2. Explicador Post-Evento: Genera la notificación clara para el cliente final del bróker.
+1. Copiloto de Órdenes: Traduce instrucciones en lenguaje natural a reglas matemáticas auditables
+   (incluyendo Tramos Adaptativos, Suelo Dinámico y Gap Guard).
+2. Explicador Post-Evento: Genera la notificación auditable para el cliente final del bróker.
 """
 
 from __future__ import annotations
@@ -22,13 +23,14 @@ except ImportError:
 
 class CopilotParsedRules(BaseModel):
     limit_price: Optional[float] = None
-    protection_mode: str = "INVALIDATE"
+    protection_mode: str = "SMART_TRANCHES"
     lookback_minutes: int = 60
     max_drop_pct: float = 4.0
     max_rvol: float = 2.5
     min_rsi: float = 28.0
     max_atr_multiple: float = 2.5
     max_benchmark_divergence_pct: float = 3.5
+    max_gap_pct: float = 3.5
     toxicity_threshold: float = 60.0
     assistant_summary: str
 
@@ -45,20 +47,18 @@ def parse_natural_language_order(
     default_limit_price: float = 90.0,
     api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Usa Gemini 2.5 Flash con Structured Outputs si hay API Key disponible;
-    de lo contrario, usa un intérprete semántico local para que el MVP funcione al instante.
-    """
     key = _resolve_api_key(api_key)
     if HAS_GENAI and key:
         try:
             client = genai.Client(api_key=key)
             sys_instruction = (
-                "Eres un asistente cuantitativo integrado en un bróker. Convierte la petición del inversor "
+                "Eres un asistente cuantitativo integrado en un bróker institucional. Convierte la petición del inversor "
                 "en parámetros exactos para una Smart Limit Order. "
                 "protection_mode solo puede ser 'INVALIDATE' (cancelar si cae brusco), "
-                "'WAIT_FOR_BOUNCE' (esperar suelo/rebote) o 'REQUIRE_CONFIRMATION' (pedir confirmación al móvil). "
-                "Responde en español claro en assistant_summary resumiendo la regla configurada."
+                "'SMART_TRANCHES' (dividir en 3 tramos escalonados adaptativos), "
+                "'TRAILING_FLOOR' (perseguir la caída con suelo dinámico hasta giro), "
+                "'WAIT_FOR_BOUNCE' (esperar rebote) o 'REQUIRE_CONFIRMATION' (pedir confirmación al móvil). "
+                "Responde en español sobrio y claro en assistant_summary sin emojis."
             )
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
@@ -81,22 +81,19 @@ def parse_natural_language_order(
             return fallback
 
     res = _heuristic_parse(prompt, default_limit_price)
-    res["engine_used"] = "Intérprete Semántico Local (Añade tu Gemini API Key arriba para usar Gemini 2.5 Flash en vivo)"
+    res["engine_used"] = "Intérprete Semántico Local (Conecta Gemini API Key para activar Gemini 2.5 Flash)"
     return res
 
 
 def _heuristic_parse(prompt: str, default_limit_price: float) -> Dict[str, Any]:
     text = prompt.lower()
 
-    # Extraer precio (ej. "a 90$", "en 88.5", "precio 92")
     price_match = re.search(r"(?:a|en|precio|l[ií]mite)\s*\$?\s*(\d+(?:[.,]\d+)?)", text)
     limit_price = float(price_match.group(1).replace(",", ".")) if price_match else default_limit_price
 
-    # Extraer porcentaje de caída (ej. "5%", "3.5 %")
     pct_match = re.search(r"(\d+(?:[.,]\d+)?)\s*%", text)
     max_drop_pct = float(pct_match.group(1).replace(",", ".")) if pct_match else 4.0
 
-    # Extraer ventana de tiempo (ej. "30 min", "1 hora", "dos horas", "45 minutos")
     lookback = 60
     min_match = re.search(r"(\d+)\s*min", text)
     hr_match = re.search(r"(\d+)\s*hora", text)
@@ -109,18 +106,22 @@ def _heuristic_parse(prompt: str, default_limit_price: float) -> Dict[str, Any]:
     elif "una hora" in text:
         lookback = 60
 
-    # Detectar modo de acción
-    if any(w in text for w in ["rebote", "suelo", "giro", "espera", "bounce"]):
+    if any(w in text for w in ["tramo", "escalona", "dca", "partes", "divid"]):
+        mode = "SMART_TRANCHES"
+        mode_desc = "ejecutar en 3 tramos escalonados adaptativos (25% / 35% / 40%)"
+    elif any(w in text for w in ["suelo", "trailing", "perseguir", "dinámico", "dinamico"]):
+        mode = "TRAILING_FLOOR"
+        mode_desc = "activar Suelo Dinámico persiguiendo la caída hasta confirmar giro"
+    elif any(w in text for w in ["rebote", "giro", "espera", "bounce"]):
         mode = "WAIT_FOR_BOUNCE"
         mode_desc = "congelar la caída y comprar solo tras confirmar rebote"
     elif any(w in text for w in ["avisa", "notifica", "confirma", "móvil", "movil", "push", "pregunta"]):
         mode = "REQUIRE_CONFIRMATION"
-        mode_desc = "pausar la orden y enviarte confirmación al móvil"
+        mode_desc = "pausar la orden y solicitar confirmación al móvil"
     else:
         mode = "INVALIDATE"
         mode_desc = "invalidar automáticamente la orden para proteger tu liquidez"
 
-    # Sensibilidad por palabras clave
     max_rvol = 2.0 if any(w in text for w in ["estricto", "conservador", "mucho cuidado", "poco volumen"]) else 2.5
     min_rsi = 32.0 if "conservador" in text else 28.0
     threshold = 50.0 if "conservador" in text else 60.0
@@ -134,10 +135,11 @@ def _heuristic_parse(prompt: str, default_limit_price: float) -> Dict[str, Any]:
         "min_rsi": min_rsi,
         "max_atr_multiple": 2.5,
         "max_benchmark_divergence_pct": round(max(2.0, max_drop_pct * 0.8), 1),
+        "max_gap_pct": round(max(2.0, max_drop_pct * 0.85), 1),
         "toxicity_threshold": threshold,
         "assistant_summary": (
-            f"Configurada compra límite a {limit_price:.2f}$: si cae más de un {max_drop_pct:.1f}% "
-            f"en {lookback} min o el volumen supera {max_rvol:.1f}x la media, el motor va a {mode_desc}."
+            f"Configurada Smart Limit a ${limit_price:.2f}: si el movimiento supera {max_drop_pct:.1f}% "
+            f"en {lookback} min o RVOL >= {max_rvol:.1f}x, el motor va a {mode_desc}."
         ),
     }
 
@@ -147,9 +149,6 @@ def generate_audit_explanation(
     sim_result: Dict[str, Any],
     api_key: Optional[str] = None,
 ) -> Dict[str, str]:
-    """
-    Genera el mensaje de cara al cliente del bróker explicando qué hizo su Smart Limit Order.
-    """
     if not sim_result.get("touched"):
         return {
             "headline": "Orden en vigilancia activa",
@@ -167,19 +166,19 @@ def generate_audit_explanation(
         try:
             client = genai.Client(api_key=key)
             prompt = (
-                f"Redacta una notificación móvil breve (máximo 3 frases, tono fintech profesional como Revolut o Trade Republic) "
-                f"para un inversor sobre su Smart Limit Order en {symbol}. "
-                f"Decisión del motor: {status} ({smart['status_label']}). "
-                f"Precio límite original: {std['fill_price']}$. "
-                f"Métricas en el toque: caída del {m['drop_pct_in_window']}% reciente, volumen relativo {m['rvol']}x, "
-                f"RSI {m['rsi_14']}, Índice de Toxicidad {m['total_toxicity_score']}/100. "
-                f"Con una orden normal su P&L final habría sido {std['final_pnl_usd']}$ ({std['final_pnl_pct']}%), "
-                f"mientras que con Smart Limit fue {smart['final_pnl_usd']}$ (capital protegido/mejora: {smart['capital_saved_usd']}$)."
+                f"Redacta una notificación institucional breve (máximo 3 frases, sin emojis) "
+                f"para un cliente de bróker sobre su Smart Limit Order en {symbol}. "
+                f"Decisión: {status} ({smart['status_label']}). "
+                f"Precio límite: ${std['fill_price']}. "
+                f"Métricas en toque: variación {m['drop_pct_in_window']}%, RVOL {m['rvol']}x, "
+                f"RSI {m['rsi_14']}, Toxicidad {m['total_toxicity_score']}/100. "
+                f"Limit estándar: ${std['final_pnl_usd']} ({std['final_pnl_pct']}%); "
+                f"Smart Limit: ${smart['final_pnl_usd']} (ahorro/mejora: ${smart['capital_saved_usd']})."
             )
             resp = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.25),
+                config=types.GenerateContentConfig(temperature=0.2),
             )
             return {
                 "headline": f"Smart Limit · {smart['status_label']}",
@@ -189,41 +188,50 @@ def generate_audit_explanation(
         except Exception:
             pass
 
-    # Explicación determinista instantánea
     if status == "EXECUTED_SAFE":
         body = (
-            f"Tu orden de compra en {symbol} a {smart['fill_price']:.2f}$ se ha ejecutado con éxito. "
-            f"Nuestro motor verificó que el descenso fue gradual ({m['drop_pct_in_window']}% en la ventana) "
-            f"y sin volumen de pánico ({m['rvol']}x), registrando una toxicidad baja de {m['total_toxicity_score']}/100."
+            f"Tu orden en {symbol} a ${smart['fill_price']:.2f} se ejecutó con normalidad. "
+            f"El motor verificó un movimiento ordenado ({m['drop_pct_in_window']}% en ventana, RVOL {m['rvol']}x, "
+            f"absorción {int(m.get('absorption_ratio', 0)*100)}%) con toxicidad baja de {m['total_toxicity_score']}/100."
+        )
+    elif status == "EXECUTED_SMART_TRANCHES":
+        n_tr = len(smart.get("tranches", []))
+        vol_pct = smart.get("broker_volume_preserved_pct", 100.0)
+        body = (
+            f"Al detectar toxicidad ({m['total_toxicity_score']}/100) en ${std['fill_price']:.2f}, "
+            f"ShieldOrder evitó la entrada ciega y ejecutó {n_tr}/3 tramos adaptativos a un precio medio de ${smart['fill_price']:.2f} "
+            f"(mejora de {smart['value_added_pct']:+.2f}% frente a una Limit estándar, preservando el {vol_pct:.0f}% del volumen operado)."
+        )
+    elif status == "EXECUTED_TRAILING_FLOOR":
+        body = (
+            f"Detectada caída tóxica en ${std['fill_price']:.2f} (Toxicidad {m['total_toxicity_score']}/100). "
+            f"El Suelo Dinámico acompañó el desplome sin ejecutar hasta confirmar giro, logrando entrada en ${smart['fill_price']:.2f} "
+            f"({smart['value_added_pct']:+.2f}% mejor que una orden límite tradicional, 100% volumen preservado)."
         )
     elif status == "INVALIDATED_PROTECTED":
         body = (
-            f"Hemos protegido tu liquidez cancelando tu orden en {symbol} a {std['fill_price']:.2f}$. "
-            f"El precio cayó un {m['drop_pct_in_window']}% de golpe con un volumen {m['rvol']}x superior a lo normal "
-            f"(Toxicidad {m['total_toxicity_score']}/100, posible noticia adversa). "
-            f"Una orden límite tradicional habría entrado en pérdidas inmediatas (ahorro estimado: {smart['capital_saved_usd']:.2f}$)."
+            f"Liquidez protegida: orden en {symbol} a ${std['fill_price']:.2f} invalidada al detectarse "
+            f"variación brusca del {m['drop_pct_in_window']}% con RVOL {m['rvol']}x (Toxicidad {m['total_toxicity_score']}/100). "
+            f"Una orden límite tradicional habría entrado en pérdidas inmediatas (ahorro estimado: ${smart['capital_saved_usd']:.2f})."
         )
     elif status == "PAUSED_CONFIRMATION":
         body = (
-            f"{symbol} ha tocado tus {std['fill_price']:.2f}$ cayendo a velocidad anómala ({m['drop_pct_in_window']}%, volumen {m['rvol']}x). "
-            f"Hemos congelado temporalmente tu compra por precaución (Toxicidad {m['total_toxicity_score']}/100). "
-            f"¿Deseas ejecutar igualmente al precio actual ({std['final_price']:.2f}$) o descartar la orden?"
+            f"{symbol} alcanzó ${std['fill_price']:.2f} con velocidad anómala ({m['drop_pct_in_window']}%, RVOL {m['rvol']}x, "
+            f"Toxicidad {m['total_toxicity_score']}/100). Orden pausada a la espera de confirmación explícita del titular."
         )
     elif status == "EXECUTED_ON_BOUNCE":
         body = (
-            f"Al tocar {std['fill_price']:.2f}$, {symbol} caía en picado (Toxicidad {m['total_toxicity_score']}/100), "
-            f"así que retuvimos tu orden hasta detectar suelo y giro alcista. "
-            f"Compra ejecutada de forma óptima a {smart['fill_price']:.2f}$, mejorando tu posición en +{smart['value_added_pct']:.2f}% frente a una orden límite normal."
+            f"Orden retenida durante la fase de pánico en ${std['fill_price']:.2f} (Toxicidad {m['total_toxicity_score']}/100) "
+            f"y ejecutada tras confirmación de suelo a ${smart['fill_price']:.2f} (mejora de +{smart['value_added_pct']:.2f}%)."
         )
     else:
         body = (
-            f"Tu orden en {symbol} se congeló al detectar desplome severo en {std['fill_price']:.2f}$ "
-            f"(Toxicidad {m['total_toxicity_score']}/100) y expiró sin ejecutarse al no producirse un rebote seguro, "
-            f"evitando una pérdida de {smart['capital_saved_usd']:.2f}$."
+            f"Orden congelada al detectarse caída severa en ${std['fill_price']:.2f} "
+            f"(Toxicidad {m['total_toxicity_score']}/100). Expiró sin estabilización segura, evitando una pérdida de ${smart['capital_saved_usd']:.2f}."
         )
 
     return {
         "headline": f"Smart Limit · {smart['status_label']}",
         "body": body,
-        "generated_by": "Motor Auditable B2B (Conecta Gemini API Key para redacción generativa)",
+        "generated_by": "Motor Auditable MiFID II · ShieldOrder B2B",
     }

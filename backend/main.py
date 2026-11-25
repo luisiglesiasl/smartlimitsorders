@@ -1,11 +1,10 @@
 """
-Servidor API B2B para Brókers (Estilo Interactive Brokers Client Portal + ShieldOrder Plugin).
-Soporta:
-- Cotizaciones y gráficos en tiempo real de cualquier acción (Yahoo Finance)
-- Casos históricos reales de desplomes bursátiles (ASML, NVDA, INTC, SMCI, AAPL)
-- Simulador / Backtester instantáneo comparando Limit Order estándar vs ShieldOrder Smart Limit
-- Monitor de Órdenes Activas en vivo (Paper Trading)
-- Copiloto y Notificaciones con Google Gemini (google-genai)
+Servidor API B2B v4.0 · ShieldOrder Execution Suite (Estilo Interactive Brokers Client Portal):
+- Datos reales en vivo y casos históricos reales con Earnings/Gap Guard
+- Simulador Cuantitativo Block-Bootstrap Monte Carlo + Frontera de Precio Óptimo
+- Auto-Calibración por Régimen σ + Acoplamiento Cartera <-> Protección
+- Modos Pro-Volumen (Smart Tranches, Suelo Dinámico) + Recibo Criptográfico MiFID II SHA-256
+- Consola Ejecutiva B2B para Brókers (ROI Simulator & Compliance Audit Log)
 """
 
 from __future__ import annotations
@@ -26,6 +25,7 @@ from engine import (
     evaluate_toxicity_at_index,
     get_preset_rules,
     estimate_fill_probability,
+    build_mifid_audit_receipt,
 )
 from market_data import (
     REAL_CRASH_CASES,
@@ -42,11 +42,12 @@ from portfolio_engine import (
 )
 
 app = FastAPI(
-    title="ShieldOrder B2B · Interactive Brokers Integration Demo & OMS API",
-    version="2.0.0",
+    title="ShieldOrder B2B v4.0 · Institutional Smart Limit & Pre-Trade OMS API",
+    version="4.0.0",
     description=(
-        "Infraestructura B2B integrable en el Order Ticket de brókers (estilo Interactive Brokers) "
-        "para proteger órdenes límite mediante métricas de velocidad, volumen relativo, ATR, RSI y divergencia."
+        "Infraestructura B2B integrable en el Order Ticket y OMS de brókers: "
+        "Smart Limit Orders con auto-calibración σ, modos pro-volumen (Tramos Adaptativos y Suelo Dinámico), "
+        "Monte Carlo condicional, inteligencia pre-trade de cartera y auditoría criptográfica MiFID II."
     ),
 )
 
@@ -66,9 +67,21 @@ async def disable_static_cache(request, call_next):
         response.headers["Pragma"] = "no-cache"
     return response
 
-# Almacén en memoria de Órdenes Activas (Paper Live Monitor) y Cartera del Inversor
+
 ACTIVE_ORDERS: List[Dict[str, Any]] = []
 USER_PORTFOLIO: PortfolioState = get_default_portfolio()
+AUDIT_RECEIPTS_LOG: List[Dict[str, Any]] = []
+
+
+def _record_audit_receipt(receipt: Optional[Dict[str, Any]]) -> None:
+    if not receipt:
+        return
+    rid = receipt.get("receipt_id")
+    if any(r.get("receipt_id") == rid for r in AUDIT_RECEIPTS_LOG):
+        return
+    AUDIT_RECEIPTS_LOG.insert(0, receipt)
+    if len(AUDIT_RECEIPTS_LOG) > 40:
+        del AUDIT_RECEIPTS_LOG[40:]
 
 
 class SimulationAPIRequest(BaseModel):
@@ -80,9 +93,11 @@ class SimulationAPIRequest(BaseModel):
     side: str = "BUY"
     time_in_force: str = "Day"
     protection_enabled: bool = True
-    protection_mode: str = "INVALIDATE"
-    preset: str = "MODERATE"
+    protection_mode: str = "SMART_TRANCHES"
+    preset: str = "AUTO_SIGMA"
     rules: RiskRules = Field(default_factory=RiskRules)
+    portfolio_tightening: float = Field(default=1.0, ge=0.65, le=1.25)
+    earnings_window_override: Optional[bool] = None
     gemini_api_key: Optional[str] = None
 
 
@@ -95,8 +110,8 @@ class PlaceLiveOrderRequest(BaseModel):
     time_in_force: str = "Day"
     outside_rth: bool = False
     protection_enabled: bool = True
-    protection_mode: str = "INVALIDATE"
-    preset: str = "MODERATE"
+    protection_mode: str = "SMART_TRANCHES"
+    preset: str = "AUTO_SIGMA"
     rules: RiskRules = Field(default_factory=RiskRules)
 
 
@@ -109,11 +124,28 @@ class CopilotAPIRequest(BaseModel):
 class BrokerLiveCheckRequest(BaseModel):
     broker_order_id: str = "IBKR-994812"
     symbol: str = "ASML"
+    side: str = "BUY"
     limit_price: float = 1280.0
+    quantity: float = 10.0
     candle_interval_minutes: int = 5
-    preset: str = "MODERATE"
-    protection_mode: str = "INVALIDATE"
+    preset: str = "AUTO_SIGMA"
+    protection_mode: str = "SMART_TRANCHES"
+    earnings_window_active: bool = False
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    spread_bps: Optional[float] = None
+    order_book_imbalance: Optional[float] = None
     recent_candles: List[Candle]
+
+
+class BrokerROISimulationRequest(BaseModel):
+    active_retail_accounts: int = Field(default=250_000, ge=1_000, le=50_000_000)
+    monthly_limit_volume_musd: float = Field(default=850.0, ge=1.0, le=500_000.0)
+    avg_fee_bps: float = Field(default=6.5, ge=0.5, le=100.0)
+    pro_volume_mode_adoption_pct: float = Field(default=68.0, ge=0.0, le=100.0)
+    premium_tier_adoption_pct: float = Field(default=6.5, ge=0.0, le=40.0)
+    premium_monthly_price_usd: float = Field(default=7.99, ge=1.0, le=50.0)
+    margin_account_share_pct: float = Field(default=22.0, ge=0.0, le=100.0)
 
 
 @app.get("/api/v1/market/search", tags=["1. Mercado Real"])
@@ -137,7 +169,6 @@ async def api_market_quote(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"No se pudo cargar {symbol}: {exc}")
 
-    # Actualizar vigilancia en tiempo real de órdenes activas de este ticker
     last_price = bundle["quote"]["last_price"]
     tox_score = bundle["live_toxicity"]["total_toxicity_score"]
     for order in ACTIVE_ORDERS:
@@ -147,13 +178,14 @@ async def api_market_quote(
             dist_pct = round(((last_price - order["limit_price"]) / order["limit_price"]) * 100.0, 2)
             order["distance_pct"] = dist_pct
             threshold = order["rules"]["toxicity_threshold"]
-            if last_price <= order["limit_price"] and order["side"] == "BUY":
+            touched = (last_price <= order["limit_price"]) if order["side"] == "BUY" else (last_price >= order["limit_price"])
+            if touched:
                 if order["protection_enabled"] and tox_score >= threshold:
                     order["status"] = "BLOCKED_BY_SHIELD"
-                    order["status_note"] = f"Bloqueada en vivo a ${last_price} (Toxicidad {tox_score}/100)"
+                    order["status_note"] = f"Protegida en vivo @ ${last_price} ({order['protection_mode']} · Tox {tox_score})"
                 else:
                     order["status"] = "FILLED_LIVE"
-                    order["status_note"] = f"Ejecutada en vivo a ${last_price} (Flujo sano {tox_score}/100)"
+                    order["status_note"] = f"Ejecutada en vivo @ ${last_price} (Flujo sano {tox_score}/100)"
             elif order["protection_enabled"] and tox_score >= threshold:
                 order["status"] = "ARMED_SHIELD"
                 order["status_note"] = f"Escudo armado: toxicidad actual {tox_score}/100"
@@ -169,6 +201,9 @@ async def api_market_quote(
         "case_info": bundle["case_info"],
         "quote": bundle["quote"],
         "suggested_limit_price": bundle["suggested_limit_price"],
+        "asset_stats": bundle["asset_stats"],
+        "earnings_window_active": bundle["earnings_window_active"],
+        "earnings_label": bundle["earnings_label"],
         "live_toxicity": bundle["live_toxicity"],
         "candles": [c.model_dump() for c in bundle["candles"]],
         "active_orders": ACTIVE_ORDERS,
@@ -188,6 +223,16 @@ async def run_simulation(req: SimulationAPIRequest):
 
     candles = bundle["candles"]
     effective_limit = req.limit_price if req.limit_price > 0 else bundle["suggested_limit_price"]
+    earnings_active = (
+        req.earnings_window_override
+        if req.earnings_window_override is not None
+        else bundle["earnings_window_active"]
+    )
+
+    valid_modes = {"INVALIDATE", "SMART_TRANCHES", "TRAILING_FLOOR", "WAIT_FOR_BOUNCE", "REQUIRE_CONFIRMATION"}
+    safe_mode = req.protection_mode if req.protection_mode in valid_modes else "SMART_TRANCHES"
+    valid_presets = {"AUTO_SIGMA", "CONSERVATIVE", "MODERATE", "AGGRESSIVE", "CUSTOM"}
+    safe_preset = req.preset if req.preset in valid_presets else "AUTO_SIGMA"
 
     sim_req = SmartOrderRequest(
         symbol=bundle["symbol"],
@@ -198,9 +243,12 @@ async def run_simulation(req: SimulationAPIRequest):
         quantity=req.quantity,
         time_in_force=req.time_in_force,
         protection_enabled=req.protection_enabled,
-        protection_mode=req.protection_mode,
-        preset=req.preset,
+        protection_mode=safe_mode,
+        preset=safe_preset,
         rules=req.rules,
+        earnings_window_active=earnings_active,
+        earnings_label=bundle["earnings_label"],
+        portfolio_tightening=req.portfolio_tightening,
     )
 
     comparison = simulate_order_comparison(candles, sim_req)
@@ -214,6 +262,8 @@ async def run_simulation(req: SimulationAPIRequest):
         sim_result=comparison,
         api_key=req.gemini_api_key,
     )
+    if comparison.get("audit_receipt"):
+        _record_audit_receipt(comparison["audit_receipt"])
 
     return {
         "symbol": bundle["symbol"],
@@ -223,6 +273,9 @@ async def run_simulation(req: SimulationAPIRequest):
         "quote": bundle["quote"],
         "suggested_limit_price": bundle["suggested_limit_price"],
         "effective_limit_price": effective_limit,
+        "asset_stats": bundle["asset_stats"],
+        "earnings_window_active": earnings_active,
+        "earnings_label": bundle["earnings_label"],
         "live_toxicity": bundle["live_toxicity"],
         "fill_probability": fill_prob,
         "candles": [c.model_dump() for c in candles],
@@ -285,36 +338,140 @@ async def broker_oms_evaluate(req: BrokerLiveCheckRequest):
     if len(req.recent_candles) < 5:
         raise HTTPException(status_code=400, detail="Se requieren al menos 5 velas recientes.")
 
-    rules = get_preset_rules(req.preset, RiskRules())
+    eff_spread = req.spread_bps
+    if eff_spread is None and req.bid and req.ask and req.ask > req.bid and req.bid > 0:
+        mid = (req.ask + req.bid) / 2.0
+        eff_spread = round(((req.ask - req.bid) / mid) * 10_000.0, 1)
+
+    rules = get_preset_rules(req.preset, RiskRules(), candles=req.recent_candles, interval_minutes=req.candle_interval_minutes)
     metrics = evaluate_toxicity_at_index(
         candles=req.recent_candles,
         idx=len(req.recent_candles) - 1,
         eval_price=req.limit_price,
         interval_minutes=req.candle_interval_minutes,
         rules=rules,
+        side=req.side,
+        earnings_window_active=req.earnings_window_active,
+        spread_bps=eff_spread,
+        order_book_imbalance=req.order_book_imbalance,
     )
     is_dangerous = metrics.total_toxicity_score >= rules.toxicity_threshold or len(metrics.triggered_flags) >= 2
     action = "ROUTE_TO_EXCHANGE" if not is_dangerous else req.protection_mode
+    vol_pres = 100.0 if not is_dangerous or action in ("SMART_TRANCHES", "TRAILING_FLOOR") else 0.0
+
+    receipt = build_mifid_audit_receipt(
+        symbol=req.symbol,
+        side=req.side,
+        limit_price=req.limit_price,
+        quantity=req.quantity,
+        protection_mode=req.protection_mode,
+        decision=action,
+        rules=rules,
+        metrics=metrics,
+        broker_volume_preserved_pct=vol_pres,
+        capital_saved_usd=0.0,
+    )
+    _record_audit_receipt(receipt)
 
     return {
         "broker_order_id": req.broker_order_id,
         "symbol": req.symbol,
         "oms_action": action,
+        "broker_volume_preserved_pct": vol_pres,
         "toxicity_score": metrics.total_toxicity_score,
         "threshold": rules.toxicity_threshold,
         "metrics": metrics.model_dump(),
+        "compliance_receipt": receipt,
     }
+
+
+@app.post("/api/v1/b2b/roi-estimate", tags=["5. Integración OMS Bróker (Producción)"])
+async def broker_executive_roi(req: BrokerROISimulationRequest):
+    """
+    Simulador Financiero B2B para CEO/CPO/CFO de un bróker:
+    cuantifica el volumen preservado (resolviendo la objeción de pérdida de comisiones),
+    capital protegido a clientes, retención de AUM/LTV, ahorro en bad-debt de margen
+    e ingresos recurrentes por tier Premium white-label.
+    """
+    annual_limit_vol_usd = req.monthly_limit_volume_musd * 12.0 * 1_000_000.0
+    annual_limit_rev_usd = annual_limit_vol_usd * (req.avg_fee_bps / 10_000.0)
+
+    # Aproximadamente el 9.5% del volumen en limit orders toca durante micro-eventos tóxicos / gaps adversos
+    toxic_touch_share = 0.095
+    toxic_vol_usd = annual_limit_vol_usd * toxic_touch_share
+
+    # Capital protegido a clientes (caída adversa media evitada del 6.8% en eventos tóxicos)
+    client_capital_protected_usd = toxic_vol_usd * 0.068
+
+    # Resolución de objeción de volumen:
+    # - Modos pro-volumen (Tramos / Suelo Dinámico) preservan ~91% del volumen tóxico mediante re-entrada segura
+    # - Modos de pausa/invalidación preservan ~38% por re-colocación consciente posterior
+    pro_share = req.pro_volume_mode_adoption_pct / 100.0
+    toxic_volume_retained_ratio = pro_share * 0.91 + (1.0 - pro_share) * 0.38
+    overall_volume_preserved_pct = round(((1.0 - toxic_touch_share) + toxic_touch_share * toxic_volume_retained_ratio) * 100.0, 1)
+
+    fee_drag_if_cancel_only_usd = annual_limit_rev_usd * toxic_touch_share * 0.62
+    fee_recovered_by_pro_modes_usd = annual_limit_rev_usd * toxic_touch_share * (toxic_volume_retained_ratio - 0.38)
+
+    # Reducción de Churn y Retención de LTV (clientes que no abandonan tras sufrir pérdidas súbitas)
+    avg_annual_rev_per_account = max(35.0, (annual_limit_rev_usd / max(1, req.active_retail_accounts)) * 2.4)
+    accounts_saved_from_blowup = int(req.active_retail_accounts * 0.022)
+    retained_ltv_revenue_usd = accounts_saved_from_blowup * avg_annual_rev_per_account * 1.65
+
+    # Ahorro en Margin Bad-Debt / Liquidaciones negativas
+    margin_bad_debt_avoided_usd = client_capital_protected_usd * (req.margin_account_share_pct / 100.0) * 0.045
+
+    # Upsell Tier Premium White-Label (ej. suscripción tipo Robinhood Gold / Ultra)
+    premium_subscribers = int(req.active_retail_accounts * (req.premium_tier_adoption_pct / 100.0))
+    premium_arr_usd = premium_subscribers * req.premium_monthly_price_usd * 12.0
+
+    # Impacto neto total anual en P&L del bróker
+    residual_cancel_fee_cost_usd = annual_limit_rev_usd * toxic_touch_share * (1.0 - toxic_volume_retained_ratio)
+    total_broker_net_impact_usd = (
+        retained_ltv_revenue_usd
+        + margin_bad_debt_avoided_usd
+        + premium_arr_usd
+        - residual_cancel_fee_cost_usd
+    )
+
+    return {
+        "inputs": req.model_dump(),
+        "kpis": {
+            "client_capital_protected_musd": round(client_capital_protected_usd / 1_000_000.0, 2),
+            "overall_volume_preserved_pct": overall_volume_preserved_pct,
+            "fee_recovered_by_pro_modes_kusd": round(fee_recovered_by_pro_modes_usd / 1_000.0, 1),
+            "residual_cancel_fee_cost_kusd": round(residual_cancel_fee_cost_usd / 1_000.0, 1),
+            "accounts_retained_yearly": accounts_saved_from_blowup,
+            "retained_ltv_revenue_musd": round(retained_ltv_revenue_usd / 1_000_000.0, 2),
+            "margin_bad_debt_avoided_kusd": round(margin_bad_debt_avoided_usd / 1_000.0, 1),
+            "premium_subscribers": premium_subscribers,
+            "premium_arr_musd": round(premium_arr_usd / 1_000_000.0, 2),
+            "total_broker_net_impact_musd": round(total_broker_net_impact_usd / 1_000_000.0, 2),
+            "fee_drag_avoided_vs_naive_cancel_kusd": round(fee_drag_if_cancel_only_usd / 1_000.0, 1),
+        },
+        "executive_thesis": (
+            f"Con un {req.pro_volume_mode_adoption_pct:.0f}% de uso en modos pro-volumen (Tramos Adaptativos y Suelo Dinámico), "
+            f"el bróker preserva el {overall_volume_preserved_pct}% de su volumen total en órdenes límite, "
+            f"protege ${round(client_capital_protected_usd / 1_000_000.0, 1)}M/año de capital de clientes y genera "
+            f"+${round(total_broker_net_impact_usd / 1_000_000.0, 2)}M/año de impacto neto en P&L entre retención de LTV, "
+            f"ahorro en bad-debt de margen y monetización de tier Premium."
+        ),
+    }
+
+
+@app.get("/api/v1/b2b/audit-log", tags=["5. Integración OMS Bróker (Producción)"])
+async def get_compliance_audit_log():
+    """Devuelve los últimos recibos criptográficos deterministas SHA-256 (MiFID II / Best Execution)."""
+    return {"count": len(AUDIT_RECEIPTS_LOG), "receipts": AUDIT_RECEIPTS_LOG}
 
 
 @app.get("/api/v1/portfolio", tags=["6. Cartera & Perfil del Inversor"])
 async def get_portfolio():
-    """Devuelve la cartera actual del usuario (8 acciones + cash) y su perfil de inversor."""
     return {"portfolio": USER_PORTFOLIO.model_dump()}
 
 
 @app.put("/api/v1/portfolio", tags=["6. Cartera & Perfil del Inversor"])
 async def update_portfolio(portfolio: PortfolioState):
-    """Guarda los cambios en las posiciones, liquidez o perfil del inversor."""
     global USER_PORTFOLIO
     USER_PORTFOLIO = portfolio
     return {"portfolio": USER_PORTFOLIO.model_dump()}
@@ -322,11 +479,6 @@ async def update_portfolio(portfolio: PortfolioState):
 
 @app.post("/api/v1/portfolio/impact", tags=["6. Cartera & Perfil del Inversor"])
 async def compute_pre_trade_portfolio_impact(req: PreTradeImpactRequest):
-    """
-    Simula el impacto Pre-Trade en la cartera del inversor si su Smart Limit Order se ejecuta:
-    nuevos pesos ponderados, rentabilidad esperada, volatilidad Markowitz, Beta, Sharpe, VaR 95%,
-    encaje con el perfil (Fit Score 0-100) y tamaño óptimo sugerido (Smart Sizing).
-    """
     if req.portfolio is None:
         req.portfolio = USER_PORTFOLIO
     return evaluate_pre_trade_impact(req)

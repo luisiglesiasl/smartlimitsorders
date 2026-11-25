@@ -1,12 +1,10 @@
 """
-Motor Cuantitativo Pre-Trade: Impacto en Cartera & Encaje con el Perfil del Inversor.
-Calcula en tiempo real cómo cambia la cartera actual del usuario si se ejecuta su Smart Limit Order:
-- Nuevos pesos ponderados por posición y por sector
-- Rentabilidad esperada (modelo factorial / CAPM)
-- Volatilidad anualizada (matriz de covarianza/correlación sectorial estilo Markowitz)
-- Beta frente al mercado (S&P 500) y Ratio de Sharpe
-- VaR 95% mensual y Stress Test (-10% mercado)
-- Fit Score (0-100) según perfil del inversor + Smart Position Sizing (cantidad óptima sugerida)
+Motor Cuantitativo Pre-Trade v4.0: Impacto en Cartera & Encaje con el Perfil del Inversor.
+- Pesos ponderados por posición y por sector
+- Rentabilidad esperada (CAPM / factorial), Volatilidad Markowitz, Beta, Sharpe, VaR 95%, Stress Test -10%
+- Sobreescritura en vivo de volatilidad y beta real calculadas desde las velas del activo buscado
+- Acoplamiento Cartera <-> ShieldOrder ("Portfolio-Aware Execution"): recomienda automáticamente
+  Smart Position Sizing + endurecimiento de reglas y modo óptimo de protección según el perfil.
 """
 
 from __future__ import annotations
@@ -14,10 +12,9 @@ import math
 from typing import List, Dict, Any, Optional, Literal
 from pydantic import BaseModel, Field
 
-RISK_FREE_RATE = 4.25  # Tasa libre de riesgo anual (%)
-MARKET_RISK_PREMIUM = 5.8  # Prima de riesgo anual de renta variable (%)
+RISK_FREE_RATE = 4.25
+MARKET_RISK_PREMIUM = 5.8
 
-# Base de datos cuantitativa de referencia (sector, beta, volatilidad anual %, retorno esperado %, estilo)
 ASSET_METADATA: Dict[str, Dict[str, Any]] = {
     "ASML": {"name": "ASML Holding N.V.", "sector": "Semiconductors", "beta": 1.38, "vol": 34.5, "exp_ret": 14.2, "style": "GROWTH", "price_fallback": 1336.0},
     "NVDA": {"name": "NVIDIA Corp.", "sector": "Semiconductors", "beta": 1.68, "vol": 46.0, "exp_ret": 16.5, "style": "GROWTH", "price_fallback": 138.0},
@@ -76,6 +73,8 @@ class PreTradeImpactRequest(BaseModel):
     quantity: float = Field(gt=0)
     limit_price: float = Field(gt=0)
     portfolio: Optional[PortfolioState] = None
+    live_asset_vol_pct: Optional[float] = None
+    live_asset_beta: Optional[float] = None
 
 
 def get_default_portfolio() -> PortfolioState:
@@ -96,23 +95,38 @@ def get_default_portfolio() -> PortfolioState:
     )
 
 
-def get_asset_info(symbol: str, fallback_price: float = 100.0) -> Dict[str, Any]:
+def get_asset_info(
+    symbol: str,
+    fallback_price: float = 100.0,
+    live_vol_pct: Optional[float] = None,
+    live_beta: Optional[float] = None,
+) -> Dict[str, Any]:
     sym = symbol.strip().upper()
     if sym in ASSET_METADATA:
         info = dict(ASSET_METADATA[sym])
         info["symbol"] = sym
-        return info
-    is_crypto = sym.endswith("-USD") or sym.endswith("USDT")
-    return {
-        "symbol": sym,
-        "name": sym,
-        "sector": "Crypto" if is_crypto else "Equities / Other",
-        "beta": 1.85 if is_crypto else 1.12,
-        "vol": 60.0 if is_crypto else 27.5,
-        "exp_ret": 17.5 if is_crypto else round(RISK_FREE_RATE + 1.12 * MARKET_RISK_PREMIUM, 1),
-        "style": "GROWTH" if is_crypto else "BALANCED",
-        "price_fallback": fallback_price,
-    }
+        info["data_calibrated"] = "Referencia + Mercado en vivo" if live_vol_pct else "Referencia cuantitativa"
+    else:
+        is_crypto = sym.endswith("-USD") or sym.endswith("USDT")
+        info = {
+            "symbol": sym,
+            "name": sym,
+            "sector": "Crypto" if is_crypto else "Equities / Other",
+            "beta": 1.85 if is_crypto else 1.12,
+            "vol": 60.0 if is_crypto else 27.5,
+            "exp_ret": 17.5 if is_crypto else round(RISK_FREE_RATE + 1.12 * MARKET_RISK_PREMIUM, 1),
+            "style": "GROWTH" if is_crypto else "BALANCED",
+            "price_fallback": fallback_price,
+            "data_calibrated": "Calibrado en vivo (velas reales)" if live_vol_pct else "Estimación sectorial",
+        }
+
+    if live_vol_pct and live_vol_pct > 5.0:
+        info["vol"] = round(0.55 * float(live_vol_pct) + 0.45 * float(info["vol"]), 1)
+    if live_beta and live_beta > 0.2:
+        info["beta"] = round(0.50 * float(live_beta) + 0.50 * float(info["beta"]), 2)
+        if sym not in ASSET_METADATA:
+            info["exp_ret"] = round(RISK_FREE_RATE + info["beta"] * MARKET_RISK_PREMIUM, 1)
+    return info
 
 
 def _pair_correlation(sec_a: str, sec_b: str, sym_a: str, sym_b: str) -> float:
@@ -137,7 +151,6 @@ def _compute_portfolio_metrics(positions: List[Dict[str, Any]], cash_usd: float)
     equity_val = sum(p["value_usd"] for p in positions)
     total_nav = max(1.0, equity_val + max(0.0, cash_usd))
 
-    # Pesos sobre NAV total (incluyendo liquidez)
     all_nodes = []
     for p in positions:
         w = p["value_usd"] / total_nav
@@ -156,32 +169,26 @@ def _compute_portfolio_metrics(positions: List[Dict[str, Any]], cash_usd: float)
     exp_return = sum(n["weight"] * n["exp_ret"] for n in all_nodes)
     beta = sum(n["weight"] * n["beta"] for n in all_nodes)
 
-    # Varianza de cartera Markowitz con matriz de correlaciones sectoriales
     variance = 0.0
-    for i, a in enumerate(all_nodes):
-        for j, b in enumerate(all_nodes):
+    for a in all_nodes:
+        for b in all_nodes:
             rho = _pair_correlation(a["sector"], b["sector"], a["symbol"], b["symbol"])
             variance += a["weight"] * b["weight"] * (a["vol"] / 100.0) * (b["vol"] / 100.0) * rho
     vol_pct = math.sqrt(max(0.0, variance)) * 100.0
-
     sharpe = (exp_return - RISK_FREE_RATE) / max(0.5, vol_pct)
 
-    # VaR 95% mensual (z = 1.645, sigma_mensual = sigma_anual / sqrt(12))
     monthly_vol = (vol_pct / 100.0) / math.sqrt(12.0)
     monthly_mu = (exp_return / 100.0) / 12.0
     var_95_pct = max(0.0, (1.645 * monthly_vol - monthly_mu) * 100.0)
     var_95_usd = (var_95_pct / 100.0) * total_nav
 
-    # Stress Test (-10% caída S&P 500)
     stress_10_pct = round(-10.0 * beta, 2)
     stress_10_usd = round((stress_10_pct / 100.0) * total_nav, 2)
 
-    # Índice de Diversificación (Effective N = 1 / sum(w_i^2) sobre posiciones invertidas)
     inv_weights = [p["value_usd"] / max(1.0, equity_val) for p in positions if p["value_usd"] > 0]
     hhi = sum(w * w for w in inv_weights) if inv_weights else 1.0
     effective_n = round(1.0 / max(1e-6, hhi), 2)
 
-    # Pesos por sector
     sectors: Dict[str, float] = {}
     for n in all_nodes:
         sec = n["sector"]
@@ -224,16 +231,27 @@ def evaluate_pre_trade_impact(req: PreTradeImpactRequest) -> Dict[str, Any]:
     pf = req.portfolio or get_default_portfolio()
     profile = pf.profile
     target_sym = req.symbol.strip().upper()
-    target_meta = get_asset_info(target_sym, fallback_price=req.limit_price)
+    target_meta = get_asset_info(
+        target_sym,
+        fallback_price=req.limit_price,
+        live_vol_pct=req.live_asset_vol_pct,
+        live_beta=req.live_asset_beta,
+    )
     order_value = round(req.quantity * req.limit_price, 2)
 
-    # 1. Construir estado ANTES
+    # 1. Estado ANTES
     before_pos_map: Dict[str, Dict[str, Any]] = {}
     for h in pf.holdings:
         sym = h.symbol.strip().upper()
-        meta = get_asset_info(sym, fallback_price=h.price or 100.0)
+        is_target = sym == target_sym
+        meta = get_asset_info(
+            sym,
+            fallback_price=h.price or 100.0,
+            live_vol_pct=req.live_asset_vol_pct if is_target else None,
+            live_beta=req.live_asset_beta if is_target else None,
+        )
         px = float(h.price) if h.price and h.price > 0 else float(meta["price_fallback"])
-        if sym == target_sym:
+        if is_target:
             px = req.limit_price
         before_pos_map[sym] = {
             "symbol": sym,
@@ -250,7 +268,7 @@ def evaluate_pre_trade_impact(req: PreTradeImpactRequest) -> Dict[str, Any]:
 
     before_metrics = _compute_portfolio_metrics(list(before_pos_map.values()), pf.cash_usd)
 
-    # 2. Construir estado DESPUÉS (si la Limit Order se ejecuta)
+    # 2. Estado DESPUÉS
     after_pos_map = {k: dict(v) for k, v in before_pos_map.items()}
     if req.side == "BUY":
         after_cash = pf.cash_usd - order_value
@@ -271,7 +289,7 @@ def evaluate_pre_trade_impact(req: PreTradeImpactRequest) -> Dict[str, Any]:
                 "exp_ret": target_meta["exp_ret"],
                 "style": target_meta["style"],
             }
-    else:  # SELL
+    else:
         after_cash = pf.cash_usd + order_value
         if target_sym in after_pos_map:
             new_sh = max(0.0, after_pos_map[target_sym]["shares"] - req.quantity)
@@ -283,7 +301,6 @@ def evaluate_pre_trade_impact(req: PreTradeImpactRequest) -> Dict[str, Any]:
 
     after_metrics = _compute_portfolio_metrics(list(after_pos_map.values()), after_cash)
 
-    # 3. Pesos específicos de la acción y su sector antes vs después
     before_sym_weight = next((p["weight_pct"] for p in before_metrics["positions"] if p["symbol"] == target_sym), 0.0)
     after_sym_weight = next((p["weight_pct"] for p in after_metrics["positions"] if p["symbol"] == target_sym), 0.0)
 
@@ -291,7 +308,6 @@ def evaluate_pre_trade_impact(req: PreTradeImpactRequest) -> Dict[str, Any]:
     before_sec_weight = before_metrics["sector_weights"].get(target_sector, 0.0)
     after_sec_weight = after_metrics["sector_weights"].get(target_sector, 0.0)
 
-    # 4. Fit Score (0 - 100) según Perfil del Inversor + Alertas y Aciertos
     fit_score = 92
     warnings: List[str] = []
     positives: List[str] = []
@@ -302,50 +318,50 @@ def evaluate_pre_trade_impact(req: PreTradeImpactRequest) -> Dict[str, Any]:
         "AGGRESSIVE": {"max_beta": 1.55, "max_vol": 28.0},
     }[profile.risk_tolerance]
 
-    # A. Concentración individual
-    if req.side == "BUY" and after_sym_weight > profile.max_single_position_pct:
+    over_single = req.side == "BUY" and after_sym_weight > profile.max_single_position_pct
+    over_sector = req.side == "BUY" and after_sec_weight > profile.max_sector_weight_pct
+    over_beta = after_metrics["beta"] > risk_caps["max_beta"]
+    over_vol = after_metrics["volatility_pct"] > risk_caps["max_vol"]
+
+    if over_single:
         excess = round(after_sym_weight - profile.max_single_position_pct, 1)
         fit_score -= min(28, int(excess * 2.5 + 8))
         warnings.append(
-            f"Sobreconcentración en {target_sym}: pasaría a pesar un {after_sym_weight:.1f}% de tu cartera (tu límite es {profile.max_single_position_pct:.0f}%)."
+            f"Sobreconcentración en {target_sym}: pasaría a pesar un {after_sym_weight:.1f}% de tu cartera (límite {profile.max_single_position_pct:.0f}%)."
         )
     elif req.side == "BUY":
         positives.append(
             f"Peso controlado en {target_sym} ({after_sym_weight:.1f}%), dentro de tu límite máximo del {profile.max_single_position_pct:.0f}%."
         )
 
-    # B. Concentración sectorial
-    if req.side == "BUY" and after_sec_weight > profile.max_sector_weight_pct:
+    if over_sector:
         excess_s = round(after_sec_weight - profile.max_sector_weight_pct, 1)
         fit_score -= min(20, int(excess_s * 1.5 + 6))
         warnings.append(
             f"Exposición elevada al sector {target_sector}: sube de {before_sec_weight:.1f}% a {after_sec_weight:.1f}% (límite {profile.max_sector_weight_pct:.0f}%)."
         )
 
-    # C. Encaje con tolerancia al riesgo (Beta y Volatilidad)
-    if after_metrics["beta"] > risk_caps["max_beta"]:
+    if over_beta:
         fit_score -= 16
         warnings.append(
             f"Riesgo de mercado alto para perfil {profile.risk_tolerance}: la Beta sube a {after_metrics['beta']:.2f} (máx. recomendado {risk_caps['max_beta']:.2f})."
         )
-    if after_metrics["volatility_pct"] > risk_caps["max_vol"]:
+    if over_vol:
         fit_score -= 14
         warnings.append(
-            f"Volatilidad proyectada ({after_metrics['volatility_pct']:.1f}%) por encima del rango ideal para perfil {profile.risk_tolerance} (< {risk_caps['max_vol']:.1f}%)."
+            f"Volatilidad proyectada ({after_metrics['volatility_pct']:.1f}%) por encima del rango ideal (< {risk_caps['max_vol']:.1f}%)."
         )
 
-    # D. Horizonte temporal vs volatilidad del activo
     if req.side == "BUY" and profile.time_horizon == "SHORT" and target_meta["vol"] > 28.0:
         fit_score -= 15
         warnings.append(
-            f"Desajuste temporal: {target_sym} tiene alta volatilidad ({target_meta['vol']:.0f}% anual) para un horizonte de corto plazo (<1 año)."
+            f"Desajuste temporal: {target_sym} tiene alta volatilidad ({target_meta['vol']:.0f}% anual) para horizonte corto plazo."
         )
     elif req.side == "BUY" and profile.time_horizon == "LONG" and target_meta["exp_ret"] >= profile.target_annual_return_pct:
         positives.append(
-            f"Buen encaje con horizonte largo plazo: impulsa la rentabilidad esperada hacia tu objetivo del {profile.target_annual_return_pct:.1f}%."
+            f"Buen encaje con horizonte largo plazo: impulsa la rentabilidad hacia tu meta del {profile.target_annual_return_pct:.1f}%."
         )
 
-    # E. Preferencia sectorial y estilo
     if req.side == "BUY" and profile.preferred_sectors and target_sector not in profile.preferred_sectors:
         fit_score -= 8
         warnings.append(
@@ -354,14 +370,12 @@ def evaluate_pre_trade_impact(req: PreTradeImpactRequest) -> Dict[str, Any]:
     elif req.side == "BUY" and target_sector in profile.preferred_sectors:
         positives.append(f"Alineada con tu sector preferido ({target_sector}).")
 
-    # F. Liquidez / Margen
     if after_cash < 0:
         fit_score -= 18
         warnings.append(
-            f"Liquidez insuficiente: esta orden requiere ${abs(after_cash):,.2f} en margen (tu cash actual es ${pf.cash_usd:,.2f})."
+            f"Liquidez insuficiente: esta orden requiere ${abs(after_cash):,.2f} en margen (cash actual ${pf.cash_usd:,.2f})."
         )
 
-    # G. Mejora de Sharpe o rentabilidad esperada
     delta_ret = round(after_metrics["expected_return_pct"] - before_metrics["expected_return_pct"], 2)
     delta_vol = round(after_metrics["volatility_pct"] - before_metrics["volatility_pct"], 2)
     delta_beta = round(after_metrics["beta"] - before_metrics["beta"], 2)
@@ -385,32 +399,77 @@ def evaluate_pre_trade_impact(req: PreTradeImpactRequest) -> Dict[str, Any]:
         fit_label = "Desalineado con tu Perfil"
         fit_tone = "red"
 
-    # 5. Smart Position Sizing (Cantidad Óptima sugerida para respetar concentración y cash)
+    # Smart Position Sizing
     nav_base = before_metrics["total_nav_usd"]
     current_sym_val = before_pos_map[target_sym]["value_usd"] if target_sym in before_pos_map else 0.0
-    max_allowed_sym_val = (profile.max_single_position_pct / 100.0) * nav_base
-    room_by_single = max(0.0, max_allowed_sym_val - current_sym_val)
-
-    current_sec_val = (before_sec_weight / 100.0) * nav_base
-    max_allowed_sec_val = (profile.max_sector_weight_pct / 100.0) * nav_base
-    room_by_sector = max(0.0, max_allowed_sec_val - current_sec_val)
-
+    room_by_single = max(0.0, (profile.max_single_position_pct / 100.0) * nav_base - current_sym_val)
+    room_by_sector = max(0.0, (profile.max_sector_weight_pct / 100.0) * nav_base - (before_sec_weight / 100.0) * nav_base)
     safe_budget = min(room_by_single, room_by_sector, max(0.0, pf.cash_usd))
     suggested_qty = max(1, int(safe_budget // req.limit_price)) if safe_budget >= req.limit_price else 0
+
     if req.side == "BUY" and suggested_qty > 0 and suggested_qty < req.quantity:
         sizing_advice = (
             f"Smart Sizing: reducir a {suggested_qty} acc. (${suggested_qty * req.limit_price:,.0f}) "
-            f"mantiene {target_sym} y el sector {target_sector} dentro de tus límites sin usar margen."
+            f"mantiene {target_sym} y {target_sector} dentro de tus límites sin usar margen."
         )
-    elif req.side == "BUY" and suggested_qty == 0 and (after_sym_weight > profile.max_single_position_pct or after_cash < 0):
+    elif req.side == "BUY" and suggested_qty == 0 and (over_single or after_cash < 0):
         sizing_advice = (
-            f"Smart Sizing: ya estás en tu límite de liquidez o exposición en {target_sector}; considera reducir otra posición antes de añadir {target_sym}."
+            f"Smart Sizing: ya estás en tu límite de liquidez o exposición en {target_sector}; considera reducir otra posición."
         )
     else:
         suggested_qty = int(req.quantity)
-        sizing_advice = f"Tamaño adecuado: {int(req.quantity)} acciones encajan dentro de tu presupuesto y límites de concentración."
+        sizing_advice = f"Tamaño adecuado: {int(req.quantity)} acciones encajan dentro de tu presupuesto y límites."
 
-    # Comparativa combinada de sectores (Antes vs Después)
+    # ACOPLAMIENTO CARTERA <-> SHIELDORDER (Portfolio-Aware Execution)
+    tightening_factor = 1.0
+    rec_preset = "AUTO_SIGMA"
+    rec_mode = "SMART_TRANCHES"
+    rec_reasons: List[str] = []
+
+    if profile.risk_tolerance == "CONSERVATIVE":
+        tightening_factor *= 0.80
+        rec_preset = "CONSERVATIVE"
+        rec_mode = "INVALIDATE"
+        rec_reasons.append("perfil Conservador")
+    elif profile.risk_tolerance == "AGGRESSIVE":
+        tightening_factor *= 1.10
+        rec_mode = "TRAILING_FLOOR"
+        rec_reasons.append("perfil Agresivo")
+
+    if over_single or over_sector or over_beta or after_cash < 0:
+        tightening_factor = round(max(0.70, tightening_factor * 0.82), 2)
+        if profile.risk_tolerance != "CONSERVATIVE":
+            rec_mode = "SMART_TRANCHES"
+        rec_reasons.append("sobreexposición en cartera")
+
+    needs_action = (suggested_qty > 0 and suggested_qty < req.quantity) or (tightening_factor < 0.95)
+    mode_labels = {
+        "INVALIDATE": "Invalidar",
+        "SMART_TRANCHES": "Tramos Adaptativos",
+        "TRAILING_FLOOR": "Suelo Dinámico",
+        "REQUIRE_CONFIRMATION": "Confirmación Móvil",
+    }
+    if needs_action:
+        reason_txt = (
+            f"Por {', '.join(rec_reasons) or 'encaje de cartera'}: recomendamos "
+            f"{f'{suggested_qty} acc. + ' if suggested_qty < req.quantity else ''}"
+            f"modo {mode_labels.get(rec_mode, rec_mode)} con umbrales reforzados ({int(round((1 - tightening_factor) * 100))}% más estrictos)."
+        )
+    else:
+        reason_txt = (
+            f"Cartera equilibrada: Auto-Calibración σ + {mode_labels.get(rec_mode, rec_mode)} es óptimo para {target_sym}."
+        )
+
+    recommended_protection = {
+        "needs_adjustment": needs_action,
+        "recommended_qty": suggested_qty,
+        "recommended_preset": rec_preset,
+        "recommended_mode": rec_mode,
+        "recommended_mode_label": mode_labels.get(rec_mode, rec_mode),
+        "tightening_factor": round(tightening_factor, 2),
+        "summary": reason_txt,
+    }
+
     all_sec_keys = sorted(set(list(before_metrics["sector_weights"].keys()) + list(after_metrics["sector_weights"].keys())))
     sector_comparison = [
         {
@@ -430,6 +489,7 @@ def evaluate_pre_trade_impact(req: PreTradeImpactRequest) -> Dict[str, Any]:
         "asset_beta": target_meta["beta"],
         "asset_vol": target_meta["vol"],
         "asset_exp_ret": target_meta["exp_ret"],
+        "asset_calibration_source": target_meta.get("data_calibrated", "Referencia"),
         "side": req.side,
         "quantity": req.quantity,
         "limit_price": req.limit_price,
@@ -457,5 +517,6 @@ def evaluate_pre_trade_impact(req: PreTradeImpactRequest) -> Dict[str, Any]:
         "positives": positives,
         "suggested_optimal_qty": suggested_qty,
         "sizing_advice": sizing_advice,
+        "recommended_protection": recommended_protection,
         "profile_used": profile.model_dump(),
     }

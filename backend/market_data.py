@@ -1,17 +1,15 @@
 """
-Proveedor de Datos Reales de Mercado (Yahoo Finance & Binance) para el Portal Estilo Interactive Brokers:
+Proveedor de Datos Reales de Mercado (Yahoo Finance & Binance) v4.0:
 1. Cotizaciones y gráficos en tiempo real de cualquier acción o ETF mundial (ASML, NVDA, TSLA, AAPL, etc.)
    en múltiples temporalidades (1m, 5m, 15m, 1h, 1d) + índice de referencia real (QQQ / BTC-USD).
-2. Casos históricos 100% REALES de desplomes bursátiles famosos (ASML Oct 2024, NVDA DeepSeek Ene 2025,
-   INTC Ago 2024, SMCI Oct 2024 y corrección sana real de AAPL) descargados directamente de Yahoo Finance.
-3. Buscador de tickers global para la barra de búsqueda superior estilo IBKR.
+2. Casos históricos 100% REALES de desplomes bursátiles con etiquetas de catalizadores/resultados (Earnings Guard).
+3. Cálculo en vivo de estadísticas realizadas del activo (volatilidad anual, beta empírica, régimen σ).
 """
 
 from __future__ import annotations
-import math
 from typing import List, Dict, Any, Optional
 import httpx
-from engine import Candle, RiskRules, evaluate_toxicity_at_index
+from engine import Candle, RiskRules, evaluate_toxicity_at_index, compute_asset_realized_stats
 
 YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
@@ -32,10 +30,12 @@ REAL_CRASH_CASES: List[Dict[str, Any]] = [
         "description": "Caso real: ASML publicó resultados por error antes de tiempo con pedidos muy por debajo de lo previsto. El precio se desplomó en vertical atravesando soportes con volumen récord.",
         "interval": "1d",
         "minutes": 390,
-        "period1": 1724025600,  # 2024-08-19
-        "period2": 1732924800,  # 2024-11-30
+        "period1": 1724025600,
+        "period2": 1732924800,
         "suggested_limit_price": 780.0,
         "recommended_mode": "INVALIDATE",
+        "earnings_window_active": True,
+        "catalyst_label": "Resultados Q3 (Earnings Guard)",
         "tag": "Crash por Noticia",
     },
     {
@@ -43,13 +43,15 @@ REAL_CRASH_CASES: List[Dict[str, Any]] = [
         "symbol": "NVDA",
         "title": "NVDA · Crash DeepSeek (-17% en 1 sesión)",
         "date_label": "Enero 2025",
-        "description": "Caso real: El 27 de enero de 2025 NVIDIA perdió casi $600B de capitalización en una sola sesión por la irrupción de DeepSeek. Prueba 'Invalidar' o 'Esperar Rebote'.",
+        "description": "Caso real: El 27 de enero de 2025 NVIDIA perdió casi $600B de capitalización en una sola sesión por la irrupción de DeepSeek. Prueba 'Tramos Adaptativos' o 'Suelo Dinámico' para ver cómo mejora el precio medio y preserva el volumen del bróker.",
         "interval": "1d",
         "minutes": 390,
-        "period1": 1733011200,  # 2024-12-01
-        "period2": 1742428800,  # 2025-03-20
-        "suggested_limit_price": 130.0,
-        "recommended_mode": "WAIT_FOR_BOUNCE",
+        "period1": 1733011200,
+        "period2": 1742428800,
+        "suggested_limit_price": 126.0,
+        "recommended_mode": "SMART_TRANCHES",
+        "earnings_window_active": False,
+        "catalyst_label": "Shock Sectorial IA (Gap Guard)",
         "tag": "Shock Sectorial IA",
     },
     {
@@ -57,13 +59,15 @@ REAL_CRASH_CASES: List[Dict[str, Any]] = [
         "symbol": "INTC",
         "title": "INTC · Colapso de Resultados (-26% en 1 día)",
         "date_label": "Agosto 2024",
-        "description": "Caso real: Intel anunció despidos masivos y suspensión de dividendo. Las órdenes límite tradicionales compraron el desplome quedando atrapadas meses en pérdidas.",
+        "description": "Caso real: Intel anunció despidos masivos y suspensión de dividendo tras resultados. Las órdenes límite tradicionales compraron el desplome quedando atrapadas meses en pérdidas.",
         "interval": "1d",
         "minutes": 390,
-        "period1": 1717200000,  # 2024-06-01
-        "period2": 1727654400,  # 2024-09-30
+        "period1": 1717200000,
+        "period2": 1727654400,
         "suggested_limit_price": 27.5,
         "recommended_mode": "INVALIDATE",
+        "earnings_window_active": True,
+        "catalyst_label": "Resultados Q2 & Dividendo",
         "tag": "Cuchillo Cayendo",
     },
     {
@@ -74,10 +78,12 @@ REAL_CRASH_CASES: List[Dict[str, Any]] = [
         "description": "Caso real: Ernst & Young renunció como auditor de Super Micro Computer. Caída vertical con volumen explosivo donde cualquier orden límite ciega sufrió pérdidas severas.",
         "interval": "1d",
         "minutes": 390,
-        "period1": 1723420800,  # 2024-08-12
-        "period2": 1733788800,  # 2024-12-10
+        "period1": 1723420800,
+        "period2": 1733788800,
         "suggested_limit_price": 42.0,
         "recommended_mode": "INVALIDATE",
+        "earnings_window_active": True,
+        "catalyst_label": "Evento Corporativo (Dimisión Auditor)",
         "tag": "Riesgo Corporativo",
     },
     {
@@ -88,10 +94,12 @@ REAL_CRASH_CASES: List[Dict[str, Any]] = [
         "description": "Caso real de control: Retroceso técnico ordenado de Apple acompañado del mercado general, sin volumen tóxico. Demuestra que ShieldOrder aprueba y ejecuta buenas compras.",
         "interval": "1d",
         "minutes": 390,
-        "period1": 1726444800,  # 2024-09-16
-        "period2": 1734652800,  # 2024-12-20
+        "period1": 1726444800,
+        "period2": 1734652800,
         "suggested_limit_price": 223.5,
-        "recommended_mode": "INVALIDATE",
+        "recommended_mode": "SMART_TRANCHES",
+        "earnings_window_active": False,
+        "catalyst_label": None,
         "tag": "Caída Sana",
     },
 ]
@@ -105,6 +113,7 @@ POPULAR_TICKERS = [
     {"symbol": "META", "name": "Meta Platforms, Inc.", "exchange": "NASDAQ"},
     {"symbol": "AMZN", "name": "Amazon.com, Inc.", "exchange": "NASDAQ"},
     {"symbol": "AMD", "name": "Advanced Micro Devices", "exchange": "NASDAQ"},
+    {"symbol": "JNJ", "name": "Johnson & Johnson", "exchange": "NYSE"},
     {"symbol": "INTC", "name": "Intel Corporation", "exchange": "NASDAQ"},
     {"symbol": "SMCI", "name": "Super Micro Computer", "exchange": "NASDAQ"},
     {"symbol": "BTC-USD", "name": "Bitcoin USD", "exchange": "CRYPTO"},
@@ -133,7 +142,6 @@ def _extract_candles_from_yahoo(data: Dict[str, Any], bench_map: Dict[int, float
         if None in (o, h, l, c):
             continue
         ts_int = int(ts)
-        # Emparejar benchmark por timestamp exacto o día (para velas diarias)
         b_val = bench_map.get(ts_int) or bench_map.get(ts_int // 86400) or last_bench
         if b_val is not None:
             last_bench = b_val
@@ -146,7 +154,6 @@ def _extract_candles_from_yahoo(data: Dict[str, Any], bench_map: Dict[int, float
             volume=float(v or 0),
             benchmark_close=b_val,
         )
-        # Deduplicar timestamps idénticos (evita que TradingView LightweightCharts rechace los datos)
         if ts_int in seen_ts:
             candles[seen_ts[ts_int]] = candle_obj
         else:
@@ -168,7 +175,6 @@ def _build_quote_header(symbol: str, meta: Dict[str, Any], candles: List[Candle]
     change = round(last_price - prev_close, 2)
     change_pct = round((change / prev_close) * 100.0, 2) if prev_close else 0.0
 
-    # Spread realista Bid/Ask estilo Interactive Brokers
     half_spread = max(0.01, round(last_price * 0.0004, 2))
     bid = round(last_price - half_spread, 2)
     ask = round(last_price + half_spread, 2)
@@ -206,10 +212,6 @@ async def fetch_real_market_data(
     timeframe: str = "5m",
     case_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Descarga datos reales de Yahoo Finance para cualquier ticker en tiempo real
-    o para uno de los casos históricos reales curados.
-    """
     case_cfg = next((c for c in REAL_CRASH_CASES if c["id"] == case_id), None) if case_id else None
 
     if case_cfg:
@@ -246,7 +248,6 @@ async def fetch_real_market_data(
         main_res = results[0]
         meta = main_res.get("meta", {})
 
-        # Benchmark para divergencia real
         bench_map: Dict[int, float] = {}
         try:
             b_resp = await client.get(bench_url)
@@ -274,20 +275,25 @@ async def fetch_real_market_data(
 
     if case_cfg:
         suggested_limit = case_cfg["suggested_limit_price"]
+        earnings_active = bool(case_cfg.get("earnings_window_active", False))
+        earnings_label = case_cfg.get("catalyst_label")
     else:
-        # Por defecto sugerimos una limit order ~1.5% debajo del último precio (o dentro del rango reciente para backtest)
         recent_slice = candles[max(5, len(candles) // 3):]
         hi = max(c.high for c in recent_slice)
         lo = min(c.low for c in recent_slice)
         suggested_limit = round(lo + (hi - lo) * 0.42, 2)
+        earnings_active = False
+        earnings_label = None
 
-    # Calcular telemetría de toxicidad actual en tiempo real sobre la última vela
+    asset_stats = compute_asset_realized_stats(candles, interval_minutes)
+
     live_metrics = evaluate_toxicity_at_index(
         candles=candles,
         idx=len(candles) - 1,
         eval_price=candles[-1].close,
         interval_minutes=interval_minutes,
         rules=RiskRules(),
+        earnings_window_active=earnings_active,
     )
 
     return {
@@ -299,6 +305,9 @@ async def fetch_real_market_data(
         "quote": quote,
         "candles": candles,
         "suggested_limit_price": suggested_limit,
+        "asset_stats": asset_stats,
+        "earnings_window_active": earnings_active,
+        "earnings_label": earnings_label,
         "live_toxicity": live_metrics.model_dump(),
     }
 

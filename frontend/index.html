@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Client Portal · Trading &amp; ShieldOrder Execution Suite</title>
+  <title>Client Portal · Trading &amp; ShieldOrder Execution Suite v4.0</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
-  <link rel="stylesheet" href="/styles.css?v=20261125-7" />
+  <link rel="stylesheet" href="/styles.css?v=20261125-9" />
 </head>
 <body>
   <!-- BARRA SUPERIOR ESTILO INTERACTIVE BROKERS -->
@@ -19,7 +19,7 @@
       </div>
       <div class="ib-brand-text">
         <span class="ib-name">Interactive<strong>Brokers</strong></span>
-        <span class="ib-plugin-tag">Client Portal · ShieldOrder Execution Engine</span>
+        <span class="ib-plugin-tag">Client Portal · ShieldOrder Execution Suite v4.0</span>
       </div>
     </div>
 
@@ -27,10 +27,17 @@
       <a href="#" class="ib-nav-item" id="navPortfolio">Portfolio</a>
       <a href="#" class="ib-nav-item active" id="navLiveMode">Trade</a>
       <a href="#" class="ib-nav-item" id="navRealCases">Historical Cases</a>
+      <a href="#" class="ib-nav-item nav-b2b-accent" id="navExecutive">B2B Executive (ROI)</a>
       <a href="/docs" target="_blank" class="ib-nav-item">OMS API</a>
     </nav>
 
     <div class="ib-top-right">
+      <!-- SELECTOR MODO ESTÁNDAR (RETAIL) VS PRO (TRADER AVANZADO) -->
+      <div class="mode-switch-wrap" title="Alternar entre interfaz limpia para clientes generales y controles cuantitativos avanzados">
+        <button type="button" id="btnModeStandard" class="mode-sw-btn active">Estándar</button>
+        <button type="button" id="btnModePro" class="mode-sw-btn">Pro</button>
+      </div>
+
       <div class="ib-search-wrap">
         <svg class="svg-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="11" cy="11" r="7"></circle><line x1="16.5" y1="16.5" x2="21" y2="21"></line>
@@ -39,6 +46,7 @@
         <kbd>Ctrl+K</kbd>
         <div id="searchDropdown" class="search-dropdown hidden"></div>
       </div>
+
       <button id="btnExportPdf" class="ib-icon-btn" title="Exportar informe ejecutivo en PDF">
         <svg class="svg-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -46,13 +54,12 @@
           <line x1="8" y1="13" x2="16" y2="13"></line>
           <line x1="8" y1="17" x2="13" y2="17"></line>
         </svg>
-        <span>Export PDF</span>
+        <span>PDF</span>
       </button>
       <button id="btnOpenGemini" class="ib-icon-btn" title="Configurar Google Gemini API">
         <span id="geminiDot" class="status-dot dot-amber"></span>
-        <span>Gemini API</span>
+        <span>Gemini</span>
       </button>
-      <button id="btnTopTrade" class="ib-trade-cta">Trade</button>
     </div>
   </header>
 
@@ -83,6 +90,7 @@
         <span id="qName" class="q-company">Cargando datos de mercado...</span>
         <span id="qExchange" class="q-exchange">NASDAQ</span>
         <span id="qModePill" class="q-live-pill">LIVE · AUTO 15s</span>
+        <span id="qCatalystPill" class="q-catalyst-pill hidden">CATALYST GUARD</span>
       </div>
       <div class="quote-price-row">
         <span id="qPrice" class="q-main-price">--</span>
@@ -95,6 +103,10 @@
         <div class="q-tox-mini" id="qLiveToxBadge">
           <span>Toxicidad actual</span>
           <strong id="qLiveToxVal">--</strong>
+        </div>
+        <div class="q-tox-mini pro-only" id="qRegimeBadge">
+          <span>Régimen Activo</span>
+          <strong id="qRegimeVal" style="background:#f1f5f9;color:#334155;">--</strong>
         </div>
       </div>
     </div>
@@ -119,9 +131,15 @@
           <line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line>
           <line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line>
         </svg>
-        <span>Órdenes Activas <em id="ordersCountBadge" class="count-pill">0</em></span>
+        <span>Órdenes <em id="ordersCountBadge" class="count-pill">0</em></span>
       </button>
-      <button class="subtab-btn" data-view="viewOmsJson">
+      <button class="subtab-btn" data-view="viewExecutive">
+        <svg class="subtab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M12 20V10"></path><path d="M18 20V4"></path><path d="M6 20v-4"></path>
+        </svg>
+        <span>B2B ROI &amp; Audit</span>
+      </button>
+      <button class="subtab-btn pro-only" data-view="viewOmsJson">
         <svg class="subtab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
           <polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline>
         </svg>
@@ -138,7 +156,7 @@
       <button class="ribbon-pill" data-live="NVDA">NVDA</button>
       <button class="ribbon-pill" data-live="TSLA">TSLA</button>
       <button class="ribbon-pill" data-live="AAPL">AAPL</button>
-      <button class="ribbon-pill" data-live="MSFT">MSFT</button>
+      <button class="ribbon-pill" data-live="JNJ">JNJ</button>
       <button class="ribbon-pill" data-live="BTC-USD">BTC-USD</button>
     </div>
     <div class="ribbon-divider"></div>
@@ -149,7 +167,7 @@
 
   <!-- CONTENEDOR PRINCIPAL: GRÁFICO IZQUIERDA (70%) + ORDER TICKET DERECHA (30%) -->
   <main class="ib-workspace">
-    <!-- COLUMNA IZQUIERDA: GRÁFICO + AUDITORÍA -->
+    <!-- COLUMNA IZQUIERDA: GRÁFICO + VISTAS -->
     <div class="left-stage">
       <!-- Banner descriptivo si es un caso histórico real -->
       <div id="caseBanner" class="case-banner hidden">
@@ -161,7 +179,7 @@
       </div>
 
       <!-- TARJETA DEL GRÁFICO ESTILO IBKR -->
-      <div class="chart-card">
+      <div class="chart-card" id="mainChartCard">
         <div class="chart-toolbar">
           <div class="tf-group" id="tfGroup">
             <button class="tf-btn" data-tf="1m">1m</button>
@@ -180,7 +198,7 @@
         </div>
       </div>
 
-      <!-- SUB-VISTA 1: COMPARATIVA BACKTEST + 5 MÉTRICAS + NOTIFICACIÓN -->
+      <!-- SUB-VISTA 1: COMPARATIVA BACKTEST + RESUMEN ESTÁNDAR / TELEMETRÍA PRO -->
       <div id="viewQuote" class="subview-panel">
         <div id="untouchedNotice" class="notice-amber hidden"></div>
 
@@ -201,32 +219,87 @@
             </div>
             <div id="smartMainVal" class="comp-number">--</div>
             <div id="smartSubVal" class="comp-sub">Evaluación contextual activa</div>
+            <div id="volPreservedRow" class="vol-preserved-tag hidden">Volumen preservado para el bróker: <strong id="volPreservedVal">100%</strong></div>
           </div>
 
           <div class="comp-card">
             <div class="comp-top">
               <span class="comp-title">Índice de Toxicidad en el Toque</span>
-              <span class="latency-chip">0.42 ms</span>
+              <span class="latency-chip">0.41 ms</span>
             </div>
             <div class="tox-row">
               <span id="toxVal" class="comp-number">--</span>
               <div class="tox-track"><div id="toxBar" class="tox-fill"></div></div>
             </div>
-            <div id="toxSub" class="comp-sub">Umbral de bloqueo: 60/100</div>
+            <div id="toxSub" class="comp-sub">Umbral de bloqueo: 58/100</div>
+          </div>
+        </div>
+
+        <!-- TELEMETRÍA DE MICROESTRUCTURA INSTITUCIONAL (SOLO MODO PRO) -->
+        <div class="micro-strip pro-only" id="microStrip">
+          <div class="micro-cell">
+            <span>Distancia VWAP</span>
+            <strong id="mcVwap">--</strong>
+          </div>
+          <div class="micro-cell">
+            <span>Absorción Mecha</span>
+            <strong id="mcAbsorb">--</strong>
+          </div>
+          <div class="micro-cell">
+            <span>Flujo VPIN-Lite</span>
+            <strong id="mcVpin">--</strong>
+          </div>
+          <div class="micro-cell">
+            <span>Gap Apertura</span>
+            <strong id="mcGap">--</strong>
+          </div>
+          <div class="micro-cell">
+            <span>Spread OMS (Est.)</span>
+            <strong id="mcSpread">--</strong>
+          </div>
+          <div class="micro-cell">
+            <span>Book Imbalance</span>
+            <strong id="mcImbal">--</strong>
           </div>
         </div>
 
         <div class="details-two-col">
+          <!-- COLUMNA IZQUIERDA: 5 MÉTRICAS UNIFICADAS CON GRADIENTE DE PROBABILIDAD (ESTÁNDAR + PRO) -->
           <div class="white-card">
-            <h3>Control de Métricas en el Punto de Ejecución</h3>
-            <p class="muted-sm">Activa, desactiva o ajusta el umbral de cada métrica directamente para definir las condiciones de bloqueo:</p>
+            <div class="card-head-flex">
+              <div>
+                <h3 id="metricsCardTitle">Control de Métricas ShieldOrder</h3>
+                <p id="metricsCardDesc" class="muted-sm">Ajusta cada métrica a tu gusto. El gradiente indica en tiempo real la probabilidad de que ocurra el umbral en este activo.</p>
+              </div>
+              <button type="button" id="btnSwitchProInline" class="ib-btn-outline-sm standard-only">Ver Telemetría Pro</button>
+            </div>
+
+            <div class="std-regime-banner" id="stdRegimeBanner">--</div>
+            <div id="stdTranchesBox" class="std-tranches-box hidden" style="margin-top:8px;"></div>
+
+            <!-- LEYENDA VISUAL DE PROBABILIDAD (VERDE -> AMARILLO -> ROJO) -->
+            <div class="prob-legend-bar">
+              <span class="prob-leg-title">Probabilidad del umbral:</span>
+              <span class="prob-leg-item"><i class="leg-dot leg-green"></i>Probable</span>
+              <span class="prob-leg-grad"></span>
+              <span class="prob-leg-item"><i class="leg-dot leg-amber"></i>Moderado</span>
+              <span class="prob-leg-item"><i class="leg-dot leg-red"></i>Poco probable / Extremo</span>
+            </div>
+
+            <!-- LAS 5 MÉTRICAS EDITABLES (SIEMPRE INTEGRADO; 6ª MÉTRICA GAP GUARD EN PRO) -->
             <div id="metricsList" class="metrics-list"></div>
+
             <ul id="flagsList" class="flags-list"></ul>
           </div>
 
           <div class="white-card">
-            <h3>Notificación Auditable al Cliente</h3>
-            <p class="muted-sm">Registro de ejecución y alerta enviada a la app del bróker bajo criterios MiFID II / Best Execution:</p>
+            <div class="card-head-flex">
+              <div>
+                <h3>Notificación Auditable al Cliente</h3>
+                <p class="muted-sm">Registro determinista MiFID II / Best Execution emitido al instante:</p>
+              </div>
+              <span id="receiptIdBadge" class="latency-chip">--</span>
+            </div>
             <div class="notif-preview">
               <div class="notif-meta">
                 <span>Interactive Brokers · ShieldOrder</span>
@@ -240,6 +313,7 @@
               </div>
             </div>
             <div id="notifEngine" class="engine-meta"></div>
+            <div id="receiptHashLine" class="receipt-hash-line">SHA-256: --</div>
           </div>
         </div>
       </div>
@@ -255,15 +329,16 @@
                 <span id="pfAssetMetaBadge" class="pill pill-grey">--</span>
               </div>
               <p id="pfSizingAdvice" class="pf-sizing-text">--</p>
+              <p id="pfProtectionLinkText" class="pf-link-text">--</p>
             </div>
           </div>
-          <button type="button" id="btnApplyOptimalFull" class="ib-btn-blue hidden">Aplicar tamaño óptimo</button>
+          <button type="button" id="btnApplyOptimalFull" class="ib-btn-blue hidden">Aplicar Sizing + Protección</button>
         </div>
 
         <div class="pf-two-col">
           <div class="white-card">
             <h3>Perfil del Inversor</h3>
-            <p class="muted-sm">Parámetros de riesgo, horizonte y concentración utilizados para evaluar el impacto pre-trade:</p>
+            <p class="muted-sm">Parámetros de riesgo, horizonte y concentración que calibran el sizing y la protección:</p>
             <div class="pf-form-grid">
               <div>
                 <label class="ib-label">TOLERANCIA AL RIESGO</label>
@@ -369,11 +444,89 @@
         </div>
       </div>
 
-      <!-- SUB-VISTA 4: PAYLOAD B2B OMS -->
+      <!-- SUB-VISTA 4: CONSOLA EJECUTIVA B2B PARA BRÓKERS (ROI & AUDITORÍA MiFID II) -->
+      <div id="viewExecutive" class="subview-panel hidden">
+        <div class="white-card exec-hero-card">
+          <div class="orders-head">
+            <div>
+              <span class="exec-eyebrow">B2B BROKER BUSINESS CASE · P&amp;L &amp; VOLUME RETENTION</span>
+              <h3>Simulador de Impacto Financiero para Brókers (CPO / CFO / CRO)</h3>
+              <p class="muted-sm">Introduce las métricas de tu bróker para cuantificar volumen preservado, retención de LTV, ahorro en margen y monetización de tier Premium.</p>
+            </div>
+          </div>
+
+          <div class="exec-inputs-grid">
+            <div>
+              <label class="ib-label">CUENTAS RETAIL ACTIVAS</label>
+              <input id="roiAccounts" type="number" step="25000" min="1000" value="250000" class="ib-input" />
+            </div>
+            <div>
+              <label class="ib-label">VOLUMEN MENSUAL LIMIT ORDERS ($M)</label>
+              <input id="roiVolMusd" type="number" step="50" min="5" value="850" class="ib-input" />
+            </div>
+            <div>
+              <label class="ib-label">INGRESO MEDIO / COMISIÓN (BPS)</label>
+              <input id="roiFeeBps" type="number" step="0.5" min="1" value="6.5" class="ib-input" />
+            </div>
+            <div>
+              <label class="ib-label">USO MODOS PRO-VOLUMEN (<strong id="lblRoiProPct">68%</strong>)</label>
+              <input id="roiProPct" type="range" min="0" max="100" step="5" value="68" style="width:100%;accent-color:#1d59c9;margin-top:6px;" />
+            </div>
+            <div>
+              <label class="ib-label">ADOPCIÓN TIER PREMIUM (<strong id="lblRoiPremPct">6.5%</strong>)</label>
+              <input id="roiPremPct" type="range" min="0" max="20" step="0.5" value="6.5" style="width:100%;accent-color:#1d59c9;margin-top:6px;" />
+            </div>
+            <div>
+              <label class="ib-label">CUENTAS CON MARGEN (<strong id="lblRoiMarginPct">22%</strong>)</label>
+              <input id="roiMarginPct" type="range" min="0" max="60" step="2" value="22" style="width:100%;accent-color:#1d59c9;margin-top:6px;" />
+            </div>
+          </div>
+
+          <div class="exec-kpi-grid">
+            <div class="exec-kpi-box highlight">
+              <span>Impacto Neto Anual P&amp;L Bróker</span>
+              <strong id="kpiNetImpact">--</strong>
+              <small>LTV retenido + Margen + ARR - coste residual</small>
+            </div>
+            <div class="exec-kpi-box">
+              <span>Volumen de Órdenes Preservado</span>
+              <strong id="kpiVolPreserved">--</strong>
+              <small id="kpiFeeRecovered">Comisiones recuperadas vs cancelación ciega</small>
+            </div>
+            <div class="exec-kpi-box">
+              <span>Capital de Clientes Protegido / Año</span>
+              <strong id="kpiClientSaved">--</strong>
+              <small id="kpiAccountsSaved">-- cuentas retenidas</small>
+            </div>
+            <div class="exec-kpi-box">
+              <span>Ahorro Margin Bad-Debt + Tier ARR</span>
+              <strong id="kpiArrAndMargin">--</strong>
+              <small id="kpiPremSubs">-- suscriptores Premium</small>
+            </div>
+          </div>
+
+          <div id="execThesisBox" class="exec-thesis-box">--</div>
+        </div>
+
+        <div class="white-card" style="margin-top:12px;">
+          <div class="orders-head">
+            <div>
+              <h3>Registro Regulatorio Inmutable (MiFID II Art. 27 · Best Execution)</h3>
+              <p class="muted-sm">Cada decisión de ejecución emite un recibo determinista verificable mediante hash criptográfico SHA-256.</p>
+            </div>
+            <button type="button" id="btnExportAuditJson" class="ib-btn-outline-sm">Exportar Auditoría JSON</button>
+          </div>
+          <div id="auditLogTableWrap" class="orders-table-wrap">
+            <p class="empty-state">Ejecuta una simulación para generar recibos criptográficos auditables.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUB-VISTA 5: PAYLOAD B2B OMS (MODO PRO) -->
       <div id="viewOmsJson" class="subview-panel hidden">
         <div class="white-card">
-          <h3>Integración B2B · Payload JSON OMS</h3>
-          <p class="muted-sm">Respuesta estructurada en &lt;1 ms devuelta por <code>POST /api/v1/b2b/evaluate-order</code> para el Order Management System del bróker:</p>
+          <h3>Integración B2B · Payload JSON OMS (Protocolo smart-oms/v2.0)</h3>
+          <p class="muted-sm">Respuesta estructurada en &lt;1 ms devuelta por <code>POST /api/v1/b2b/evaluate-order</code> incluyendo microestructura L1/L2 y recibo criptográfico MiFID II:</p>
           <pre id="omsJsonPre" class="oms-pre"></pre>
         </div>
       </div>
@@ -444,56 +597,93 @@
             </label>
 
             <div id="shieldControlsBody" class="shield-controls">
-              <div id="shieldActionLabel" class="shield-sub-label">Acción ante desplome anómalo:</div>
-              <div class="action-seg" id="modeSeg">
-                <button type="button" class="seg-btn active" data-mode="INVALIDATE">Invalidar</button>
-                <button type="button" class="seg-btn" data-mode="WAIT_FOR_BOUNCE">Esperar Rebote</button>
-                <button type="button" class="seg-btn" data-mode="REQUIRE_CONFIRMATION">Confirmación</button>
+              <div id="shieldActionLabel" class="shield-sub-label">Si el precio llega en desplome anómalo:</div>
+              <div class="action-seg action-seg-2x2" id="modeSeg">
+                <button type="button" class="seg-btn active" data-mode="SMART_TRANCHES" title="Divide la entrada en 3 tramos al enfriarse la caída; protege precio medio y preserva el volumen del bróker">Tramos Adaptativos</button>
+                <button type="button" class="seg-btn" data-mode="TRAILING_FLOOR" title="Persigue el desplome con suelo dinámico y compra tras confirmar giro al alza">Suelo Dinámico</button>
+                <button type="button" class="seg-btn" data-mode="INVALIDATE" title="Cancela la orden automáticamente para proteger el 100% de la liquidez">Invalidar Orden</button>
+                <button type="button" class="seg-btn" data-mode="REQUIRE_CONFIRMATION" title="Congela temporalmente y solicita confirmación móvil al inversor">Confirmación Móvil</button>
               </div>
 
-              <div class="shield-sub-label">Perfil de sensibilidad o ajuste manual:</div>
-              <div class="preset-seg" id="presetSeg">
-                <button type="button" class="pseg-btn" data-preset="CONSERVATIVE">Conservador</button>
-                <button type="button" class="pseg-btn active" data-preset="MODERATE">Moderado</button>
+              <div class="shield-sub-label">Calibración de sensibilidad:</div>
+              <div class="preset-seg preset-seg-5" id="presetSeg">
+                <button type="button" class="pseg-btn active" data-preset="AUTO_SIGMA" title="Calibra umbrales automáticamente a la volatilidad real (σ) de este activo">Auto (σ)</button>
+                <button type="button" class="pseg-btn" data-preset="CONSERVATIVE">Conserv.</button>
+                <button type="button" class="pseg-btn" data-preset="MODERATE">Moderado</button>
                 <button type="button" class="pseg-btn" data-preset="AGGRESSIVE">Agresivo</button>
                 <button type="button" class="pseg-btn" data-preset="CUSTOM">Manual</button>
               </div>
 
-              <div id="customSliders" class="custom-sliders">
-                <div class="sl-item">
-                  <div class="sl-head"><span>1. Velocidad máx. (<em id="lblWin">60</em>m)</span><strong id="lblDrop">4.0%</strong></div>
-                  <input id="slDrop" type="range" min="1.0" max="15.0" step="0.5" value="4.0" />
-                </div>
-                <div class="sl-item">
-                  <div class="sl-head"><span>Ventana temporal</span><strong id="lblWinVal">60 min</strong></div>
-                  <input id="slWin" type="range" min="15" max="180" step="15" value="60" />
-                </div>
-                <div class="sl-item">
-                  <div class="sl-head"><span>2. Volumen Relativo (RVOL)</span><strong id="lblRvol">2.5x</strong></div>
-                  <input id="slRvol" type="range" min="0.5" max="6.0" step="0.1" value="2.5" />
-                </div>
-                <div class="sl-item">
-                  <div class="sl-head"><span>3. Volatilidad máx. (ATR)</span><strong id="lblAtr">2.5x</strong></div>
-                  <input id="slAtr" type="range" min="0.4" max="6.0" step="0.1" value="2.5" />
-                </div>
-                <div class="sl-item">
-                  <div class="sl-head"><span>4. RSI límite (14)</span><strong id="lblRsi">28</strong></div>
-                  <input id="slRsi" type="range" min="10" max="75" step="1" value="28" />
-                </div>
-                <div class="sl-item">
-                  <div class="sl-head"><span>5. Divergencia vs Índice</span><strong id="lblDiv">3.5%</strong></div>
-                  <input id="slDiv" type="range" min="0.2" max="12.0" step="0.2" value="3.5" />
-                </div>
-                <div class="sl-item">
-                  <div class="sl-head"><span>Umbral Toxicidad</span><strong id="lblTox">60/100</strong></div>
-                  <input id="slTox" type="range" min="25" max="90" step="5" value="60" />
-                </div>
+              <!-- RESUMEN CALMO DE AUTO-CALIBRACIÓN -->
+              <div id="autoSigmaHint" class="auto-sigma-hint">
+                Calibrado automáticamente al régimen de volatilidad de <strong>ASML</strong>.
               </div>
 
-              <details class="gemini-accordion">
+              <!-- AJUSTE DE LAS 5 MÉTRICAS INTEGRADO EN EL TICKET CON GRADIENTE VERDE-AMARILLO-ROJO -->
+              <details id="ticketMetricsDetails" class="ticket-metrics-accordion">
+                <summary>Ajustar 5 métricas (gradiente de probabilidad)</summary>
+                <div id="customSliders" class="custom-sliders">
+                  <div class="sl-item" data-mkey="velocity">
+                    <div class="sl-head">
+                      <span>1. Velocidad (<em id="lblWin">60</em>m)</span>
+                      <div class="sl-right"><strong id="lblDrop">4.0%</strong><span id="probTickVelocity" class="sl-prob-tag zone-amber">--%</span></div>
+                    </div>
+                    <input id="slDrop" class="prob-range" data-mkey="velocity" type="range" min="0.5" max="15.0" step="0.5" value="4.0" />
+                  </div>
+                  <div class="sl-item" data-mkey="rvol">
+                    <div class="sl-head">
+                      <span>2. Volumen Relativo (RVOL)</span>
+                      <div class="sl-right"><strong id="lblRvol">2.5x</strong><span id="probTickRvol" class="sl-prob-tag zone-amber">--%</span></div>
+                    </div>
+                    <input id="slRvol" class="prob-range" data-mkey="rvol" type="range" min="0.5" max="6.0" step="0.1" value="2.5" />
+                  </div>
+                  <div class="sl-item" data-mkey="atr">
+                    <div class="sl-head">
+                      <span>3. Volatilidad (ATR)</span>
+                      <div class="sl-right"><strong id="lblAtr">2.5x</strong><span id="probTickAtr" class="sl-prob-tag zone-amber">--%</span></div>
+                    </div>
+                    <input id="slAtr" class="prob-range" data-mkey="atr" type="range" min="0.4" max="6.0" step="0.1" value="2.5" />
+                  </div>
+                  <div class="sl-item" data-mkey="rsi">
+                    <div class="sl-head">
+                      <span>4. Momentum RSI (14)</span>
+                      <div class="sl-right"><strong id="lblRsi">28</strong><span id="probTickRsi" class="sl-prob-tag zone-amber">--%</span></div>
+                    </div>
+                    <input id="slRsi" class="prob-range" data-mkey="rsi" type="range" min="10" max="75" step="1" value="28" />
+                  </div>
+                  <div class="sl-item" data-mkey="divergence">
+                    <div class="sl-head">
+                      <span>5. Divergencia vs Índice</span>
+                      <div class="sl-right"><strong id="lblDiv">3.5%</strong><span id="probTickDivergence" class="sl-prob-tag zone-amber">--%</span></div>
+                    </div>
+                    <input id="slDiv" class="prob-range" data-mkey="divergence" type="range" min="0.2" max="12.0" step="0.2" value="3.5" />
+                  </div>
+                  <div class="sl-item pro-only" data-mkey="gap">
+                    <div class="sl-head">
+                      <span>6. Gap Apertura máx.</span>
+                      <div class="sl-right"><strong id="lblGap">3.5%</strong><span id="probTickGap" class="sl-prob-tag zone-amber">--%</span></div>
+                    </div>
+                    <input id="slGap" class="prob-range" data-mkey="gap" type="range" min="0.5" max="10.0" step="0.5" value="3.5" />
+                  </div>
+                  <div class="sl-item pro-only">
+                    <div class="sl-head"><span>Ventana temporal</span><strong id="lblWinVal">60 min</strong></div>
+                    <input id="slWin" type="range" min="15" max="180" step="15" value="60" />
+                  </div>
+                  <div class="sl-item pro-only">
+                    <div class="sl-head"><span>Umbral Toxicidad</span><strong id="lblTox">58/100</strong></div>
+                    <input id="slTox" type="range" min="25" max="90" step="5" value="58" />
+                  </div>
+                  <label class="guard-chk-row pro-only">
+                    <input type="checkbox" id="chkEarningsGuard" checked />
+                    <span>Activar Earnings / Catalyst Guard</span>
+                  </label>
+                </div>
+              </details>
+
+              <details class="gemini-accordion pro-only">
                 <summary>Asistente de reglas en lenguaje natural (Gemini)</summary>
                 <div class="gemini-inner">
-                  <textarea id="txtCopilot" rows="2" class="ib-textarea" placeholder="Ej: Compra si baja suave, pero invalida si cae >5% con mucho volumen"></textarea>
+                  <textarea id="txtCopilot" rows="2" class="ib-textarea" placeholder="Ej: Compra en 3 tramos si baja suave, o invalida si cae >5%"></textarea>
                   <button type="button" id="btnRunCopilot" class="ib-btn-slate-sm">Traducir a parámetros</button>
                   <div id="copilotMsg" class="copilot-msg hidden"></div>
                 </div>
@@ -518,7 +708,7 @@
             </div>
           </div>
 
-          <!-- PROBABILIDAD ESPERADA DE EJECUCIÓN -->
+          <!-- PROBABILIDAD ESPERADA DE EJECUCIÓN (MONTE CARLO CONDICIONAL + FRONTERA ÓPTIMA) -->
           <div class="fill-prob-box" id="ticketFillProbBox">
             <div class="fp-head">
               <span>Probabilidad de Ejecución</span>
@@ -528,18 +718,25 @@
               <div id="fpBarFill" class="fp-bar-fill"></div>
             </div>
             <div class="fp-breakdown">
+              <div><span>Tiempo estimado (mediana)</span><strong id="fpTtfVal">--</strong></div>
               <div><span>Toque precio (<em id="fpGapVolLbl">--</em>)</span><strong id="fpTouchPct">--%</strong></div>
-              <div><span>Aprobar filtro de métricas</span><strong id="fpPassPct">--%</strong></div>
+              <div><span>Aprobar filtro en el toque</span><strong id="fpPassPct">--%</strong></div>
             </div>
             <div class="fp-horizons">
               <span>Day: <strong id="fpDayPct">--%</strong></span>
               <span>5D: <strong id="fpWeekPct">--%</strong></span>
               <span>GTC (30d): <strong id="fpMonthPct">--%</strong></span>
             </div>
+            <!-- SUGERENCIA DE PRECIO LÍMITE ÓPTIMO (1 CLIC) -->
+            <div id="fpOptimalBox" class="fp-optimal-box hidden">
+              <span id="fpOptimalMsg">--</span>
+              <button type="button" id="btnApplyOptimalPrice" class="fp-opt-btn">Aplicar</button>
+            </div>
             <p id="fpBottleneck" class="fp-insight">--</p>
+            <div id="fpMcMeta" class="fp-mc-meta pro-only">--</div>
           </div>
 
-          <!-- IMPACTO PRE-TRADE EN CARTERA -->
+          <!-- IMPACTO PRE-TRADE EN CARTERA + ENLACE A PROTECCIÓN -->
           <div class="ticket-impact-box" id="ticketImpactBox">
             <div class="ti-head">
               <span>Impacto Pre-Trade en Cartera</span>
@@ -565,7 +762,7 @@
             </div>
             <div id="tiSizingRow" class="ti-sizing-row hidden">
               <span id="tiSizingMsg">--</span>
-              <button type="button" id="btnApplyOptimalTicket" class="ti-opt-btn">Ajustar</button>
+              <button type="button" id="btnApplyOptimalTicket" class="ti-opt-btn">Aplicar</button>
             </div>
             <button type="button" id="btnOpenPortfolioTab" class="ti-more-link">Ver análisis completo de cartera y perfil</button>
           </div>
@@ -584,6 +781,6 @@
     </aside>
   </main>
 
-  <script src="/app.js?v=20261125-7"></script>
+  <script src="/app.js?v=20261125-9"></script>
 </body>
 </html>
