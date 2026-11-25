@@ -182,7 +182,7 @@ def generate_audit_explanation(
                 config=types.GenerateContentConfig(temperature=0.25),
             )
             return {
-                "headline": f"🛡️ Smart Limit · {smart['status_label']}",
+                "headline": f"Smart Limit · {smart['status_label']}",
                 "body": resp.text.strip(),
                 "generated_by": "Google Gemini (gemini-2.5-flash)",
             }
@@ -205,7 +205,7 @@ def generate_audit_explanation(
         )
     elif status == "PAUSED_CONFIRMATION":
         body = (
-            f"⚠️ {symbol} ha tocado tus {std['fill_price']:.2f}$ cayendo a velocidad anómala ({m['drop_pct_in_window']}%, volumen {m['rvol']}x). "
+            f"{symbol} ha tocado tus {std['fill_price']:.2f}$ cayendo a velocidad anómala ({m['drop_pct_in_window']}%, volumen {m['rvol']}x). "
             f"Hemos congelado temporalmente tu compra por precaución (Toxicidad {m['total_toxicity_score']}/100). "
             f"¿Deseas ejecutar igualmente al precio actual ({std['final_price']:.2f}$) o descartar la orden?"
         )
@@ -223,7 +223,7 @@ def generate_audit_explanation(
         )
 
     return {
-        "headline": f"🛡️ {smart['status_label']}",
+        "headline": f"Smart Limit · {smart['status_label']}",
         "body": body,
         "generated_by": "Motor Auditable B2B (Conecta Gemini API Key para redacción generativa)",
     }

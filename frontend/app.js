@@ -43,7 +43,7 @@ function initIBChart() {
     layout: {
       background: { type: "solid", color: "#ffffff" },
       textColor: "#475569",
-      fontFamily: "Inter, sans-serif",
+      fontFamily: "Roboto, Helvetica Neue, Arial, sans-serif",
     },
     grid: {
       vertLines: { color: "#f1f5f9" },
@@ -572,13 +572,13 @@ function renderQuoteHeader(q, liveTox, caseInfo) {
 
   const pill = document.getElementById("qModePill");
   if (caseInfo) {
-    pill.textContent = `📅 CASO REAL · ${caseInfo.date_label.toUpperCase()}`;
+    pill.textContent = `HISTÓRICO · ${caseInfo.date_label.toUpperCase()}`;
     pill.className = "q-live-pill hist";
     document.getElementById("caseBanner").classList.remove("hidden");
     document.getElementById("caseBannerTitle").textContent = caseInfo.title;
     document.getElementById("caseBannerDesc").textContent = caseInfo.description;
   } else {
-    pill.textContent = "● TIEMPO REAL (AUTO 15s)";
+    pill.textContent = "LIVE · AUTO 15s";
     pill.className = "q-live-pill";
     document.getElementById("caseBanner").classList.add("hidden");
   }
@@ -650,7 +650,7 @@ function renderAll(data) {
   const untouched = document.getElementById("untouchedNotice");
 
   if (!sim.touched) {
-    untouched.textContent = `ℹ️ ${sim.message} — Consejo: haz clic en cualquier nivel del gráfico para fijar tu Limit Price dentro del rango.`;
+    untouched.textContent = `${sim.message} Haz clic en cualquier nivel del gráfico para fijar tu Limit Price dentro del rango.`;
     untouched.classList.remove("hidden");
     state.candleSeries.setMarkers([]);
     state.chart.timeScale().fitContent();
@@ -726,8 +726,8 @@ function renderAll(data) {
   toxBar.style.width = `${Math.min(100, tox)}%`;
   toxBar.style.background = danger ? "#d92d20" : "#00894c";
   document.getElementById("toxSub").textContent = danger
-    ? `⚠️ Flujo tóxico (supera umbral ${th}/100)`
-    : `✅ Flujo sano (debajo de umbral ${th}/100)`;
+    ? `Flujo tóxico detectado (supera umbral ${th}/100)`
+    : `Flujo sano (por debajo de umbral ${th}/100)`;
 
   // 5. Barras INTERACTIVAS de las 5 métricas (editables directamente aquí por el usuario)
   const applied = sim.applied_rules;
@@ -881,8 +881,8 @@ function renderAll(data) {
 
   const fl = document.getElementById("flagsList");
   fl.innerHTML = m.triggered_flags.length
-    ? m.triggered_flags.map((f) => `<li>🚨 ${f}</li>`).join("")
-    : `<li class="ok-flag">✅ Sin alertas de toxicidad: descenso ordenado apto para ejecutar la Limit Order.</li>`;
+    ? m.triggered_flags.map((f) => `<li><strong>ALERTA:</strong> ${f}</li>`).join("")
+    : `<li class="ok-flag"><strong>OK:</strong> Sin alertas de toxicidad. Descenso ordenado apto para ejecutar la Limit Order.</li>`;
 
   // 6. Notificación y OMS JSON
   document.getElementById("notifTitle").textContent = data.client_notification.headline;
@@ -918,7 +918,7 @@ async function placeLiveOrder() {
   renderOrdersTable(data.orders || []);
 
   const toast = document.getElementById("orderConfirmToast");
-  toast.textContent = `✅ Orden ${data.order.order_id} enviada: ${data.order.side} ${data.order.quantity} ${data.order.symbol} @ $${data.order.limit_price} (${data.order.order_type}). Ver en pestaña "Órdenes Activas".`;
+  toast.textContent = `Orden ${data.order.order_id} enviada: ${data.order.side} ${data.order.quantity} ${data.order.symbol} @ $${data.order.limit_price} (${data.order.order_type}). Ver en Órdenes Activas.`;
   toast.classList.remove("hidden");
   setTimeout(() => toast.classList.add("hidden"), 5000);
 }
@@ -1013,7 +1013,7 @@ async function runCopilot() {
     document.getElementById("lblTox").textContent = `${parsed.toxicity_threshold}/100`;
 
     const msg = document.getElementById("copilotMsg");
-    msg.textContent = `✅ ${parsed.assistant_summary}`;
+    msg.textContent = parsed.assistant_summary;
     msg.classList.remove("hidden");
     updateEstTotal();
     await loadMarketAndSimulate(false);
@@ -1231,8 +1231,8 @@ function renderPortfolioImpact(imp) {
     `${imp.side} ${imp.quantity} ${imp.symbol} @ $${imp.limit_price.toFixed(2)} ($${imp.order_value_usd.toLocaleString("en-US")})`;
 
   // Alertas y puntos fuertes
-  document.getElementById("pfWarningsList").innerHTML = imp.warnings.map((w) => `<li>⚠️ ${w}</li>`).join("");
-  document.getElementById("pfPositivesList").innerHTML = imp.positives.map((p) => `<li class="ok-flag">✅ ${p}</li>`).join("");
+  document.getElementById("pfWarningsList").innerHTML = imp.warnings.map((w) => `<li><strong>RIESGO:</strong> ${w}</li>`).join("");
+  document.getElementById("pfPositivesList").innerHTML = imp.positives.map((p) => `<li class="ok-flag"><strong>OK:</strong> ${p}</li>`).join("");
 
   // Tabla comparativa Antes -> Después
   const fmtD = (val, unit = "", invertGood = false) => {
@@ -1264,7 +1264,7 @@ function renderPortfolioImpact(imp) {
       return `
         <div class="pf-sec-row">
           <div class="pf-sec-head">
-            <span>${s.is_target_sector ? "🎯 " : ""}<strong>${s.sector}</strong></span>
+            <span><strong>${s.sector}</strong>${s.is_target_sector ? " (Orden)" : ""}</span>
             <span>${s.before_pct}% → <strong>${s.after_pct}%</strong> (${ds})</span>
           </div>
           <div class="pf-sec-track">

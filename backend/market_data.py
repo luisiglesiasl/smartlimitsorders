@@ -92,7 +92,7 @@ REAL_CRASH_CASES: List[Dict[str, Any]] = [
         "period2": 1734652800,  # 2024-12-20
         "suggested_limit_price": 223.5,
         "recommended_mode": "INVALIDATE",
-        "tag": "Caída Sana ✓",
+        "tag": "Caída Sana",
     },
 ]
 
